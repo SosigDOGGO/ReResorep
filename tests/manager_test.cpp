@@ -13,7 +13,10 @@
 #include "mod_state.h"
 #include "settings.h"
 #include "texture_index.h"
+#include "updater.h"
+#include "version.h"
 #include "win_util.h"
+#include "zip.h"
 
 namespace fs = std::filesystem;
 using namespace resorep;
@@ -254,6 +257,156 @@ static void TestProxyStatus(const fs::path& builtProxy) {
     fs::remove_all(root);
 }
 
+static std::vector<uint8_t> ReadBytes(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+static std::string ReadText(const fs::path& p) {
+    const auto b = ReadBytes(p);
+    return std::string(b.begin(), b.end());
+}
+
+static void TestUpdateParsing() {
+    CHECK(ParseVersion("v2.5.4") && ParseVersion("v2.5.4")->ToString() == "2.5.4");
+    CHECK(ParseVersion("10.0.12") && ParseVersion("10.0.12")->major == 10);
+    CHECK(!ParseVersion("2.5") && !ParseVersion("2.5.4-beta") && !ParseVersion("") && !ParseVersion("v2.x.1"));
+    CHECK(CompareVersions(*ParseVersion("2.5.10"), *ParseVersion("2.5.9")) > 0);
+    CHECK(CompareVersions(*ParseVersion("2.6.0"), *ParseVersion("3.0.0")) < 0);
+    CHECK(CompareVersions(*ParseVersion("2.5.4"), *ParseVersion("v2.5.4")) == 0);
+
+    const std::string base = "https://github.com/SosigDOGGO/ReResorep/releases/download/v9.1.0/";
+    const std::string json =
+        "{\"html_url\":\"https://github.com/SosigDOGGO/ReResorep/releases/tag/v9.1.0\",\"tag_name\":\"v9.1.0\","
+        "\"name\":\"ReResorep 9.1.0\",\"draft\":false,\"prerelease\":false,\"id\":123,\"assets\":["
+        "{\"name\":\"ReResorep-9.1.0-win64.zip.sha256.txt\",\"size\":90,\"browser_download_url\":\"" + base +
+        "ReResorep-9.1.0-win64.zip.sha256.txt\"},"
+        "{\"name\":\"ReResorep-9.1.0-win64.zip\",\"browser_download_url\":\"" + base +
+        "ReResorep-9.1.0-win64.zip\",\"uploader\":{\"x\":[1,2.5e3,-4,null,true,{}]}}],"
+        "\"body\":\"## Fixes\\r\\n- **Bold** `code` caf\\u00e9 \\ud83d\\ude00 [the page](https://x)\"}";
+    ReleaseInfo r;
+    CHECK(ParseLatestRelease(json, r).empty());
+    CHECK(r.version.ToString() == "9.1.0" && r.title == "ReResorep 9.1.0");
+    CHECK(r.zipUrl == base + "ReResorep-9.1.0-win64.zip" && r.checksumUrl == r.zipUrl + ".sha256.txt");
+    CHECK(NotesForDisplay(r.notes) == "Fixes\n- Bold code caf\xC3\xA9 \xF0\x9F\x98\x80 the page");
+
+    // Assets elsewhere, unfinished releases and broken JSON are refused.
+    std::string other = json;
+    for (size_t at; (at = other.find("SosigDOGGO/ReResorep/releases/download")) != std::string::npos;)
+        other.replace(at, 10, "SomeoneElse");
+    CHECK(!ParseLatestRelease(other, r).empty());
+    std::string pre = json;
+    pre.replace(pre.find("\"prerelease\":false"), 18, "\"prerelease\":true");
+    CHECK(!ParseLatestRelease(pre, r).empty());
+    CHECK(!ParseLatestRelease(json.substr(0, json.size() - 1), r).empty());
+    CHECK(!ParseLatestRelease("{\"tag_name\":\"v1.0.0\",\"assets\":[]}", r).empty());
+
+    const std::string hash(64, 'A');
+    const std::string sums = hash + "  ReResorep-9.1.0-win64.zip\n" + std::string(64, 'b') + " *proxy/d3d11.dll\r\n";
+    CHECK(ParseChecksumFile(sums, "ReResorep-9.1.0-win64.zip") == std::string(64, 'a'));
+    CHECK(ParseChecksumFile(sums, "proxy/d3d11.dll") == std::string(64, 'b'));
+    CHECK(ParseChecksumFile(sums, "ReResorep.exe").empty());
+    CHECK(ParseChecksumFile("xyz  ReResorep.exe\n", "ReResorep.exe").empty());
+}
+
+// A release zip like the ship step makes, from this build's sealed exe and proxy.
+static void WriteReleaseZip(const fs::path& zip, const std::string& version, const std::vector<uint8_t>& exe,
+                            const std::vector<uint8_t>& proxy, bool matchingSums = true) {
+    const std::string root = "ReResorep-" + version + "/";
+    std::string sums = Sha256Hex(exe.data(), exe.size()) + "  ReResorep.exe\n" +
+                       Sha256Hex(proxy.data(), proxy.size()) + "  proxy/d3d11.dll\n";
+    if (!matchingSums) sums = std::string(64, '0') + "  ReResorep.exe\n" + sums.substr(sums.find('\n') + 1);
+    ZipWriter w;
+    CHECK(w.Open(zip));
+    w.AddDirectory(root);
+    w.AddFile(root + "ReResorep.exe", exe.data(), exe.size());
+    w.AddDirectory(root + "proxy");
+    w.AddFile(root + "proxy/d3d11.dll", proxy.data(), proxy.size());
+    w.AddFile(root + "SHA256SUMS.txt", reinterpret_cast<const uint8_t*>(sums.data()), sums.size());
+    CHECK(w.Finish());
+}
+
+static std::string FileSha(const fs::path& p) {
+    const auto b = ReadBytes(p);
+    return Sha256Hex(b.data(), b.size());
+}
+
+static void TestUpdateInstall(const fs::path& builtProxy, const fs::path& builtExe) {
+    const fs::path root = TempDir(L"reresorep_update_test");
+    const fs::path install = root / L"ReResorep";
+    const std::vector<uint8_t> exe = ReadBytes(builtExe), proxy = ReadBytes(builtProxy);
+    CHECK(!exe.empty() && !proxy.empty());
+    const Version version = *ParseVersion(RERESOREP_VERSION_STRING);
+    const fs::path zip = root / L"update.zip";
+    WriteReleaseZip(zip, version.ToString(), exe, proxy);
+    const std::string zipSha = FileSha(zip);
+
+    // The proxy in the release is the one already there: only the exe changes.
+    Touch(install / L"ReResorep.exe", "old exe");
+    fs::create_directories(install / L"proxy");
+    fs::copy_file(builtProxy, install / L"proxy" / L"d3d11.dll");
+    StagedUpdate staged;
+    CHECK(!StageUpdate(zip, std::string(64, '0'), version, install, L"ReResorep.exe", staged).empty());
+    CHECK(!StageUpdate(zip, zipSha, *ParseVersion("99.0.0"), install, L"ReResorep.exe", staged).empty());
+    CHECK(StageUpdate(zip, zipSha, version, install, L"ReResorep.exe", staged).empty());
+    CHECK(staged.exe == install / L"ReResorep.new.exe" && fs::exists(staged.exe) && staged.proxy.empty());
+    CHECK(ReadText(install / L"ReResorep.exe") == "old exe");  // nothing replaced yet
+    CHECK(ApplyUpdate(staged, install, L"ReResorep.exe").empty());
+    CHECK(ReadBytes(install / L"ReResorep.exe") == exe && ReadText(install / L"ReResorep.old.exe") == "old exe");
+    CHECK(FilesEqual(install / L"proxy" / L"d3d11.dll", builtProxy) && !fs::exists(install / L"proxy" / L"d3d11.old.dll"));
+    CHECK(CleanUpAfterUpdate(install, L"ReResorep.exe") && !fs::exists(install / L"ReResorep.old.exe"));
+
+    // A different proxy is replaced and reported; a renamed exe keeps its name.
+    Touch(install / L"proxy" / L"d3d11.dll", "old proxy");
+    fs::rename(install / L"ReResorep.exe", install / L"Manager.exe");
+    CHECK(StageUpdate(zip, zipSha, version, install, L"Manager.exe", staged).empty());
+    CHECK(staged.exe == install / L"Manager.new.exe" && staged.proxy == install / L"proxy" / L"d3d11.new.dll");
+    CHECK(staged.proxySha256 == FileSha(builtProxy) && staged.proxyVersion == RERESOREP_PROXY_VERSION_STRING);
+    CHECK(ApplyUpdate(staged, install, L"Manager.exe").empty());
+    CHECK(FilesEqual(install / L"proxy" / L"d3d11.dll", builtProxy));
+    CHECK(ReadText(install / L"proxy" / L"d3d11.old.dll") == "old proxy");
+    CHECK(CleanUpAfterUpdate(install, L"Manager.exe") && !fs::exists(install / L"proxy" / L"d3d11.old.dll"));
+
+    // Checksums that don't match and files that aren't intact builds are refused, staging nothing.
+    WriteReleaseZip(zip, version.ToString(), exe, proxy, false);
+    CHECK(!StageUpdate(zip, FileSha(zip), version, install, L"Manager.exe", staged).empty());
+    std::vector<uint8_t> tampered = exe;
+    tampered[tampered.size() / 2] ^= 1;
+    WriteReleaseZip(zip, version.ToString(), tampered, proxy);
+    CHECK(!StageUpdate(zip, FileSha(zip), version, install, L"Manager.exe", staged).empty());
+    CHECK(!fs::exists(install / L"Manager.new.exe") && !fs::exists(install / L"proxy" / L"d3d11.new.dll"));
+    CHECK(!ApplyUpdate(StagedUpdate{}, install, L"Manager.exe").empty());  // nothing staged
+    CHECK(FilesEqual(install / L"Manager.exe", builtExe));
+    fs::remove_all(root);
+}
+
+// Talks to GitHub: only with RERESOREP_NETWORK_TEST=1. Downloads the latest release and stages it.
+static void TestUpdateFromGitHub() {
+    wchar_t flag[8] = {};
+    if (!GetEnvironmentVariableW(L"RERESOREP_NETWORK_TEST", flag, 8) || std::wstring(flag) != L"1") return;
+    std::vector<uint8_t> body;
+    std::string error = HttpGet("https://api.github.com/repos/SosigDOGGO/ReResorep/releases/latest", body, 1 << 20,
+                                nullptr, true);
+    ReleaseInfo r;
+    if (error.empty()) error = ParseLatestRelease(std::string(body.begin(), body.end()), r);
+    std::printf("network: latest is %s (%s)\n", r.version.ToString().c_str(), error.c_str());
+    CHECK(error.empty());
+    std::vector<uint8_t> sums, zip;
+    CHECK(HttpGet(r.checksumUrl, sums, 1 << 16).empty());
+    const std::string expected = ParseChecksumFile(std::string(sums.begin(), sums.end()), r.zipName);
+    DownloadProgress progress;
+    CHECK(HttpGet(r.zipUrl, zip, 256u << 20, &progress).empty() && progress.received == zip.size());
+    const fs::path root = TempDir(L"reresorep_update_net_test");
+    std::ofstream(root / L"update.zip", std::ios::binary)
+        .write(reinterpret_cast<const char*>(zip.data()), std::streamsize(zip.size()));
+    StagedUpdate staged;
+    error = StageUpdate(root / L"update.zip", expected, r.version, root, L"ReResorep.exe", staged);
+    std::printf("network: staged %s, proxy %s %s (%s)\n", ToUtf8(staged.exe).c_str(), staged.proxyVersion.c_str(),
+                staged.proxySha256.c_str(), error.c_str());
+    CHECK(error.empty() && fs::exists(staged.exe) && !staged.proxySha256.empty());
+    fs::remove_all(root);
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     TestWinnersPerBuild();
@@ -261,6 +414,10 @@ int main(int argc, char** argv) {
     TestBatch();
     if (argc > 1) TestProxyStatus(argv[1]);
     else CHECK(!"pass the built d3d11.dll");
+    TestUpdateParsing();
+    if (argc > 2) TestUpdateInstall(argv[1], argv[2]);
+    else CHECK(!"pass the built ReResorep.exe");
+    TestUpdateFromGitHub();
     fs::remove(ExeDirectory() / L"texture_info.cache");  // written by the Library above
     std::printf(g_failures ? "%d check(s) failed\n" : "all manager checks passed\n", g_failures);
     return g_failures ? 1 : 0;

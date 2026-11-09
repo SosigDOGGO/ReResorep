@@ -15,6 +15,7 @@
 
 #include "app.h"
 #include "integrity.h"
+#include "updater.h"
 #include "version.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -247,6 +248,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     ImGui::DestroyContext();
     DestroyWindow(hwnd);
     UnregisterClassW(wc.lpszClassName, instance);
+    // After "Restart and update" in the About tab: start the new version now that this one is closed.
+    if (const std::string error = resorep::ui::RunPendingRestart(); !error.empty())
+        MessageBoxW(nullptr, L"ReResorep was updated, but the new version could not be started. Start it again yourself.",
+                    L"ReResorep", MB_ICONWARNING | MB_OK);
     CoUninitialize();
     return 0;
 }

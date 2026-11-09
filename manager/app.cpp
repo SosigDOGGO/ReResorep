@@ -3034,6 +3034,9 @@ void App::DrawAbout() {
     ImGui::Text("Made by %s.", RERESOREP_AUTHOR);
     ImGui::Spacing();
 
+    DrawUpdates();
+    ImGui::Spacing();
+
     ImGui::SeparatorText("Licence");
     ImGui::Text("Copyright (C) 2026 %s", RERESOREP_AUTHOR);
     ImGui::TextWrapped("ReResorep is free software under the GNU General Public License, version 3. You can "
@@ -3083,6 +3086,70 @@ void App::DrawAbout() {
                        "Siege) can detect a replacement d3d11.dll and ban accounts: use it for offline and modded "
                        "setups only.");
     ImGui::PopTextWrapPos();
+}
+
+void App::DrawUpdates() {
+    using Step = Updater::Step;
+    updater_.Poll();
+    ImGui::SeparatorText("Updates");
+    if (updater_.updatedThisStart() && updater_.step() == Step::Idle)
+        ImGui::TextColored(kOkColor, "Updated to %s.", RERESOREP_VERSION_STRING);
+
+    const Step step = updater_.step();
+    if (step == Step::Idle || step == Step::Checking || step == Step::UpToDate || step == Step::Failed) {
+        ImGui::BeginDisabled(step == Step::Checking);
+        if (ImGui::Button(step == Step::Checking ? "Checking..." : "Check for updates")) updater_.Check();
+        ImGui::EndDisabled();
+        if (step == Step::UpToDate) {
+            ImGui::SameLine();
+            ImGui::TextColored(kOkColor, "You have the latest version.");
+        } else if (step == Step::Failed) {
+            ImGui::TextColored(kErrorColor, "%s", updater_.error().c_str());
+        }
+    } else {
+        const ReleaseInfo& release = updater_.release();
+        ImGui::TextColored(AccentTextColor(), "%s is available (you have %s).", release.title.c_str(),
+                           RERESOREP_VERSION_STRING);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Release page")) OpenWithShell(Utf8ToWide(release.pageUrl));
+        if (!release.notes.empty()) {
+            ImGui::BeginChild("releasenotes", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 10),
+                              ImGuiChildFlags_Borders);
+            ImGui::TextWrapped("%s", NotesForDisplay(release.notes).c_str());
+            ImGui::EndChild();
+        }
+        if (step == Step::Available) {
+            if (ImGui::Button("Download update")) updater_.Download();
+            if (!updater_.error().empty()) ImGui::TextColored(kErrorColor, "%s", updater_.error().c_str());
+        } else if (step == Step::Downloading) {
+            const DownloadProgress& p = updater_.progress();
+            const uint64_t got = p.received, total = p.total;
+            const std::string label = total ? FormatBytes(got) + " of " + FormatBytes(total) : FormatBytes(got);
+            ImGui::ProgressBar(total ? float(double(got) / double(total)) : 0.0f, ImVec2(320, 0), label.c_str());
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel##update")) updater_.Cancel();
+        } else if (step == Step::Ready) {
+            const StagedUpdate& staged = updater_.staged();
+            ImGui::TextColored(kOkColor, "Downloaded and checked. Restart ReResorep to finish.");
+            if (staged.proxy.empty()) {
+                ImGui::TextColored(kDimColor, "The proxy (proxy\\d3d11.dll) is unchanged, so your games need nothing new.");
+            } else {
+                ImGui::TextColored(kErrorColor, "This update has a new proxy%s.",
+                                   staged.proxyVersion.empty() ? "" : (" (" + staged.proxyVersion + ")").c_str());
+                ImGui::TextWrapped("Games keep their current d3d11.dll until you press Update for each game in the Games tab. "
+                                   "Mods that allow the proxy by its hash need the new one: SHA-256 %s",
+                                   staged.proxySha256.c_str());
+            }
+            if (ImGui::Button("Restart and update")) {
+                const std::string error = updater_.InstallAndRestart();
+                if (error.empty()) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                else Status(error, "");
+            }
+            if (!updater_.error().empty()) ImGui::TextColored(kErrorColor, "%s", updater_.error().c_str());
+        }
+    }
+    ImGui::TextColored(kDimColor, "ReResorep only goes online when you press Check for updates, and then only to "
+                                  "GitHub. Your settings, mods and labels are kept.");
 }
 
 void App::DrawImportPopup() {

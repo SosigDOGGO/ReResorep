@@ -24,6 +24,7 @@
 #include "library.h"
 #include "thumbnails.h"
 #include "tint.h"
+#include "updater.h"
 #include "win_util.h"
 
 namespace resorep::ui {
@@ -84,6 +85,7 @@ private:
     void DrawGames();
     void DrawSettings();
     void DrawAbout();
+    void DrawUpdates();  // the About tab's Updates section
     void DrawImportPopup();
     void DrawStatusBar();
     void DrawDeleteDumpsPopup();
@@ -198,6 +200,7 @@ private:
     ThumbnailCache thumbs_;
     Library library_;
     ManagerSettings settings_;
+    Updater updater_;  // only goes online when the user presses Check for updates
     std::vector<GameState> games_;
     resorep::SealState bundledSeal_ = resorep::SealState::Unreadable;  // proxy\d3d11.dll, checked in RefreshGames
     LabelStore labels_;

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "games.h"
 #include "library.h"
@@ -307,6 +308,11 @@ static void TestUpdateParsing() {
     CHECK(ParseChecksumFile(sums, "proxy/d3d11.dll") == std::string(64, 'b'));
     CHECK(ParseChecksumFile(sums, "ReResorep.exe").empty());
     CHECK(ParseChecksumFile("xyz  ReResorep.exe\n", "ReResorep.exe").empty());
+
+    // Plain HTTP is refused, and a host that doesn't exist gives an error, not a hang or a crash.
+    std::vector<uint8_t> body;
+    CHECK(!HttpGet("http://github.com/", body, 1024).empty() && body.empty());
+    CHECK(!HttpGet("https://reresorep.invalid/latest", body, 1024).empty() && body.empty());
 }
 
 // A release zip like the ship step makes, from this build's sealed exe and proxy.
@@ -366,6 +372,33 @@ static void TestUpdateInstall(const fs::path& builtProxy, const fs::path& builtE
     CHECK(FilesEqual(install / L"proxy" / L"d3d11.dll", builtProxy));
     CHECK(ReadText(install / L"proxy" / L"d3d11.old.dll") == "old proxy");
     CHECK(CleanUpAfterUpdate(install, L"Manager.exe") && !fs::exists(install / L"proxy" / L"d3d11.old.dll"));
+
+    // A new exe that something (antivirus) holds for a moment still goes in; one held for good
+    // leaves everything as it was, with the update still staged for another try.
+    Touch(install / L"proxy" / L"d3d11.dll", "old proxy");
+    CHECK(StageUpdate(zip, zipSha, version, install, L"Manager.exe", staged).empty());
+    HANDLE held = CreateFileW(staged.exe.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    CHECK(held != INVALID_HANDLE_VALUE);
+    std::thread release([held] {
+        Sleep(500);
+        CloseHandle(held);
+    });
+    CHECK(ApplyUpdate(staged, install, L"Manager.exe").empty());
+    release.join();
+    CHECK(FilesEqual(install / L"Manager.exe", builtExe) && FilesEqual(install / L"proxy" / L"d3d11.dll", builtProxy));
+    CHECK(CleanUpAfterUpdate(install, L"Manager.exe"));
+
+    Touch(install / L"Manager.exe", "current exe");
+    Touch(install / L"proxy" / L"d3d11.dll", "old proxy");
+    CHECK(StageUpdate(zip, zipSha, version, install, L"Manager.exe", staged).empty());
+    held = CreateFileW(staged.exe.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    CHECK(!ApplyUpdate(staged, install, L"Manager.exe").empty());
+    CloseHandle(held);
+    CHECK(ReadText(install / L"Manager.exe") == "current exe" && ReadText(install / L"proxy" / L"d3d11.dll") == "old proxy");
+    CHECK(fs::exists(staged.exe) && fs::exists(staged.proxy) && !fs::exists(install / L"Manager.old.exe"));
+    CHECK(ApplyUpdate(staged, install, L"Manager.exe").empty());  // the retry works
+    CHECK(FilesEqual(install / L"Manager.exe", builtExe));
+    CHECK(CleanUpAfterUpdate(install, L"Manager.exe"));
 
     // Checksums that don't match and files that aren't intact builds are refused, staging nothing.
     WriteReleaseZip(zip, version.ToString(), exe, proxy, false);

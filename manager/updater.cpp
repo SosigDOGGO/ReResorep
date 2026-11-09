@@ -546,6 +546,20 @@ std::string StageUpdate(const fs::path& zip, const std::string& zipSha256, const
     return {};
 }
 
+// Antivirus and search indexers often hold a file that was just written for a moment, so a
+// move that is refused for that reason is tried again for about two seconds.
+static BOOL MoveWithRetry(const wchar_t* from, const wchar_t* to, DWORD flags) {
+    for (int attempt = 0;; ++attempt) {
+        if (MoveFileExW(from, to, flags)) return TRUE;
+        const DWORD err = GetLastError();
+        if (attempt >= 20 || (err != ERROR_SHARING_VIOLATION && err != ERROR_LOCK_VIOLATION && err != ERROR_ACCESS_DENIED)) {
+            SetLastError(err);
+            return FALSE;
+        }
+        Sleep(100);
+    }
+}
+
 std::string ApplyUpdate(const StagedUpdate& staged, const fs::path& installDir, const std::wstring& exeName) {
     const fs::path exe = installDir / exeName, oldExe = installDir / WithSuffix(exeName, L".old");
     const fs::path proxy = installDir / L"proxy" / L"d3d11.dll", oldProxy = installDir / L"proxy" / L"d3d11.old.dll";
@@ -554,31 +568,31 @@ std::string ApplyUpdate(const StagedUpdate& staged, const fs::path& installDir, 
     if (!staged.proxy.empty() && !fs::exists(staged.proxy, ec)) return "The downloaded update is gone. Download it again.";
 
     bool hadProxy = false, proxySwapped = false;
-    auto restoreProxy = [&] {
+    auto restoreProxy = [&] {  // the new proxy goes back to staged, so another try still has it
         if (!proxySwapped) return;
-        if (hadProxy) MoveFileExW(oldProxy.c_str(), proxy.c_str(), MOVEFILE_REPLACE_EXISTING);
-        else DeleteFileW(proxy.c_str());
+        MoveWithRetry(proxy.c_str(), staged.proxy.c_str(), MOVEFILE_REPLACE_EXISTING);
+        if (hadProxy) MoveWithRetry(oldProxy.c_str(), proxy.c_str(), MOVEFILE_REPLACE_EXISTING);
     };
     if (!staged.proxy.empty()) {
         hadProxy = fs::exists(proxy, ec);
-        if (hadProxy && !MoveFileExW(proxy.c_str(), oldProxy.c_str(), MOVEFILE_REPLACE_EXISTING))
+        if (hadProxy && !MoveWithRetry(proxy.c_str(), oldProxy.c_str(), MOVEFILE_REPLACE_EXISTING))
             return "Could not replace proxy\\d3d11.dll (error " + std::to_string(GetLastError()) + ").";
-        if (!MoveFileExW(staged.proxy.c_str(), proxy.c_str(), 0)) {
+        if (!MoveWithRetry(staged.proxy.c_str(), proxy.c_str(), 0)) {
             const DWORD err = GetLastError();
-            if (hadProxy) MoveFileExW(oldProxy.c_str(), proxy.c_str(), MOVEFILE_REPLACE_EXISTING);
+            if (hadProxy) MoveWithRetry(oldProxy.c_str(), proxy.c_str(), MOVEFILE_REPLACE_EXISTING);
             return "Could not replace proxy\\d3d11.dll (error " + std::to_string(err) + ").";
         }
         proxySwapped = true;
     }
     // A running exe can be renamed, though not overwritten or deleted.
-    if (!MoveFileExW(exe.c_str(), oldExe.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (!MoveWithRetry(exe.c_str(), oldExe.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         const DWORD err = GetLastError();
         restoreProxy();
         return "Could not move the current ReResorep.exe aside (error " + std::to_string(err) + ").";
     }
-    if (!MoveFileExW(staged.exe.c_str(), exe.c_str(), 0)) {
+    if (!MoveWithRetry(staged.exe.c_str(), exe.c_str(), 0)) {
         const DWORD err = GetLastError();
-        MoveFileExW(oldExe.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING);
+        MoveWithRetry(oldExe.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING);
         restoreProxy();
         return "Could not put the new ReResorep.exe in place (error " + std::to_string(err) + ").";
     }

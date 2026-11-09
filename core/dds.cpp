@@ -214,7 +214,7 @@ bool ParseHeader(const uint8_t* file, size_t size, DdsImage& out, size_t& offset
         std::memcpy(&ext, file + offset, sizeof(ext));
         offset += sizeof(ext);
         out.format = DXGI_FORMAT(ext.dxgiFormat);
-        out.arraySize = ext.arraySize;
+        out.arraySize = std::max(1u, ext.arraySize);  // some writers leave 0 for a single texture
         if (ext.resourceDimension == kDimTexture3D) {
             out.isVolume = true;
             out.depth = std::max(1u, hdr.depth);
@@ -235,9 +235,9 @@ bool ParseHeader(const uint8_t* file, size_t size, DdsImage& out, size_t& offset
     if (out.width == 0 || out.height == 0 || out.width > 16384 || out.height > 16384 || out.mipLevels > 15)
         return Fail(error, "invalid dimensions"), false;
     // D3D11 limits apply to faces (not cubes) and to every dimension of a volume.
-    if (out.arraySize == 0 || out.arraySize > 2048u / (out.isCubemap ? 6u : 1u))
+    if (out.arraySize > 2048u / (out.isCubemap ? 6u : 1u))
         return Fail(error, "invalid array size"), false;
-    if (out.isVolume && (out.arraySize != 1 || out.isCubemap || hdr.depth == 0 ||
+    if (out.isVolume && (out.arraySize != 1 || out.isCubemap ||
                          std::max({out.width, out.height, out.depth}) > 2048))
         return Fail(error, "invalid volume dimensions"), false;
     return true;

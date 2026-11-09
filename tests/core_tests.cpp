@@ -156,7 +156,10 @@ static void TestDdsArrayAndVolumeHeaders() {
     };
     CHECK(read(3, 4, 1, 0, 6));    // a cube has six faces
     CHECK(read(4, 0, 1, 2, 2));    // a volume has a single array element
-    CHECK(!read(3, 0, 0, 0, 1));
+    CHECK(read(3, 0, 0, 0, 1));    // array size 0 means a single texture, as before
+    CHECK(read(4, 0, 1, 0, 1));    // so does a volume depth of 0
+    CHECK(!read(3, 0, 2049, 0, 2049));
+    CHECK(!read(3, 4, 342, 0, 342 * 6));
     CHECK(!read(4, 0, 2, 1, 2));
     CHECK(!read(4, 4, 1, 1, 6));
 }
@@ -336,6 +339,15 @@ static void TestZipFromOtherTool() {
         CHECK(reader.Open(withComment) && reader.entries().size() == 7);
         CHECK(reader.Open(zipPath) && reader.entries().size() == 7);
     }
+    // Bytes appended after the end record (padding, a signature block) still open.
+    auto padded = std::vector<uint8_t>(std::begin(kFixtureZip), std::end(kFixtureZip));
+    padded.insert(padded.end(), 40, 0);
+    const fs::path withPadding = base / L"padded.zip";
+    WriteBytes(withPadding, padded);
+    {
+        ZipReader reader;
+        CHECK(reader.Open(withPadding) && reader.entries().size() == 7);
+    }
 
     {
         ZipWriter writer;
@@ -435,7 +447,8 @@ static void TestModPackageRoundTrip() {
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     CHECK(lock != INVALID_HANDLE_VALUE);
     if (lock != INVALID_HANDLE_VALUE) {
-        CHECK(!ExportModPackage(modded, L"Ash Elite", full, {true, false}, labels).error.empty());
+        const PackageResult locked = ExportModPackage(modded, L"Ash Elite", full, {true, false}, labels);
+        CHECK(locked.error.find("Could not open") == 0);
         CloseHandle(lock);
         CHECK(InspectModPackage(full).name == "Uniform");
     }

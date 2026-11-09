@@ -201,6 +201,10 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
             const std::wstring file = path.filename().wstring();
             if (_wcsicmp(fs::path(file).extension().c_str(), L".dds") != 0) continue;
             std::ifstream in(path, std::ios::binary | std::ios::ate);
+            if (!in) {
+                r.error = "Could not open " + WideToUtf8(path.wstring()) + " (is another program using it?)";
+                return r;
+            }
             const std::streamoff size = in.tellg();
             if (size < 0 || size > (1ll << 30)) {
                 r.error = "Could not read " + WideToUtf8(path.wstring()) + " (1 GB limit per texture).";

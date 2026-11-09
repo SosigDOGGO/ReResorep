@@ -22,7 +22,7 @@ set(RERESOREP_UNSEALED ${CMAKE_BINARY_DIR}/unsealed)
 # code it links): mods that whitelist d3d11.dll by its hash need the new hash every time it does.
 # A release that only changes the manager keeps it, and ships the released proxy file
 # (packaging/proxy.sha256).
-set(RERESOREP_PROXY_VERSION 2.5.1)
+set(RERESOREP_PROXY_VERSION 2.5.0)
 string(REPLACE "." ";" RERESOREP_PROXY_VERSION_PARTS ${RERESOREP_PROXY_VERSION})
 list(GET RERESOREP_PROXY_VERSION_PARTS 0 RERESOREP_PROXY_VERSION_MAJOR)
 list(GET RERESOREP_PROXY_VERSION_PARTS 1 RERESOREP_PROXY_VERSION_MINOR)

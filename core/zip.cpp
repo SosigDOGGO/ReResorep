@@ -340,12 +340,20 @@ bool ZipReader::Open(const std::filesystem::path& path) {
         error_ = "not a zip file";
         return false;
     }
-    size_t end = std::string::npos;
-    for (size_t i = buf.size() - 22 + 1; i-- > 0;)
-        if (Get32(&buf[i]) == kEndSig && i + 22 + Get16(&buf[i + 20]) == buf.size()) {
+    // Prefer the record whose comment ends the file: the signature can also appear inside a
+    // comment. Failing that, take the last record whose comment fits, for zips with bytes
+    // appended after them.
+    size_t end = std::string::npos, loose = std::string::npos;
+    for (size_t i = buf.size() - 22 + 1; i-- > 0;) {
+        if (Get32(&buf[i]) != kEndSig) continue;
+        const size_t recordEnd = i + 22 + Get16(&buf[i + 20]);
+        if (recordEnd == buf.size()) {
             end = i;
             break;
         }
+        if (recordEnd < buf.size() && loose == std::string::npos) loose = i;
+    }
+    if (end == std::string::npos) end = loose;
     if (end == std::string::npos) {
         error_ = "not a zip file";
         return false;

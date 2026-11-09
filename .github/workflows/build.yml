@@ -1,0 +1,33 @@
+# Builds ReResorep and runs the CTest suite on every pull request and every push to main,
+# so a PR shows a green check (or a red X) before it is merged. Pull requests from a
+# first-time contributor's fork wait for "Approve and run" on the PR page.
+name: Build and test
+
+on:
+  pull_request:
+    paths-ignore: ["docs/**", "**.md"]
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    # Visual Studio 2022, the generator the project is built with locally.
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure

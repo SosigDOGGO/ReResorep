@@ -251,7 +251,7 @@ release. Packaging a Debug build is refused.
 
 ## Version and credits
 
-The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.5.3)`). From there it goes
+The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.5.4)`). From there it goes
 into the window title, the **About** tab and the version info of `ReResorep.exe`.
 
 The proxy has its own version, `RERESOREP_PROXY_VERSION` in `CMakeLists.txt`. It goes into the

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(ReResorep LANGUAGES CXX ASM_MASM RC VERSION 2.5.3)
+project(ReResorep LANGUAGES CXX ASM_MASM RC VERSION 2.5.4)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "ReResorep builds for x64 only (configure with -A x64).")

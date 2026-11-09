@@ -151,6 +151,27 @@ background when a game is added, and again whenever the exe changes.
   **Fix…** button either moves the marks of every mod made for the old exe to the new one (same
   build, patched) or leaves them alone (a different build).
 
+### Updating
+
+**About → Check for updates** asks GitHub for the latest release. ReResorep goes online only then:
+it never checks by itself, and it sends nothing but the requests. When there's a newer version, the
+About tab shows its release notes and **Download update**, which:
+
+1. downloads the release zip and its `.sha256.txt`, and checks the zip's SHA-256;
+2. checks the `SHA256SUMS.txt` inside it, the seals of the new `ReResorep.exe` and
+   `proxy\d3d11.dll` (see below), and that the exe's version is the release's;
+3. unpacks them beside the current ones as `ReResorep.new.exe` and `proxy\d3d11.new.dll`.
+
+**Restart and update** then renames the running exe to `ReResorep.old.exe` (Windows lets a running
+exe be renamed, not overwritten), moves the new one in, closes ReResorep and starts the new version,
+which deletes the `.old` files. If a step fails, the files are put back. Settings, mods, labels and
+dumps are not touched.
+
+The bundled `proxy\d3d11.dll` is replaced only when the release's copy is different, and the About
+tab says so first, with the new proxy's SHA-256 for mods that whitelist it. Proxies already in game
+folders are never changed by an update: the Games tab shows them as outdated, and **Update** there
+puts the new one in.
+
 ### Damaged or modified copies
 
 Each build seals `ReResorep.exe` and `proxy\d3d11.dll`. A small tool (`tools/seal.cpp`) writes
@@ -195,7 +216,7 @@ copies*). The copies in `build/unsealed/` won't start; Visual Studio runs the se
 | Loading the real d3d11 | Copy of System32's `d3d11.dll` placed in the game folder | Loads System32's directly (no stale copy after Windows updates); lazily, never under the loader lock |
 | Mod format vs game format | Uses the DDS format | Keeps the game's format when it's the same family (such as BC3 vs BC3 sRGB), so the game's views still work |
 | Global hook (AppInit_DLLs) | Windows 7 only | Dropped |
-| Analytics / update check | Google Analytics, jimdo.com version check | None |
+| Analytics / update check | Google Analytics, jimdo.com version check | No analytics; updates only when you press **Check for updates** |
 
 ## Layout
 

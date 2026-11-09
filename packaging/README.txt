@@ -45,6 +45,16 @@ Making your own mods
   (saved as !reresorep_game.ini in the mod's folder).
 
 
+Updating
+------------------------------------------------------------------------------
+About tab -> "Check for updates". ReResorep only goes online when you press
+it, and then only to GitHub. If there's a newer version, "Download update"
+fetches and checks it, and "Restart and update" puts it in place and starts
+it. Your settings, mods and labels stay. Games keep the d3d11.dll they have;
+if an update brings a new proxy, the Games tab shows them as outdated and
+"Update" there installs it.
+
+
 Damaged or modified files
 ------------------------------------------------------------------------------
 ReResorep.exe and proxy\d3d11.dll check themselves when they start. If

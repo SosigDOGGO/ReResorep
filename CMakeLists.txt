@@ -96,11 +96,12 @@ add_test(NAME proxy_test COMMAND proxy_test ${RERESOREP_BIN}/proxy/d3d11.dll)
 add_test(NAME proxy_tamper_test COMMAND proxy_test ${RERESOREP_BIN}/proxy/d3d11.dll tampered)
 
 add_executable(manager_test tests/manager_test.cpp manager/library.cpp manager/games.cpp manager/win_util.cpp
-    manager/theme.cpp)
+    manager/theme.cpp manager/updater.cpp)
 target_include_directories(manager_test PRIVATE manager ${RERESOREP_GENERATED})
-target_link_libraries(manager_test PRIVATE resorep_core imgui shell32 ole32 version bcrypt)
-add_dependencies(manager_test proxy)
-add_test(NAME manager_test COMMAND manager_test ${RERESOREP_BIN}/proxy/d3d11.dll)
+target_link_libraries(manager_test PRIVATE resorep_core imgui shell32 ole32 version bcrypt winhttp)
+# The update checks unpack the sealed exe and proxy of this build.
+add_dependencies(manager_test proxy ReResorep)
+add_test(NAME manager_test COMMAND manager_test ${RERESOREP_BIN}/proxy/d3d11.dll ${RERESOREP_BIN}/ReResorep.exe)
 
 add_executable(analyzer_test tests/analyzer_test.cpp manager/analyzer.cpp)
 target_include_directories(analyzer_test PRIVATE manager)

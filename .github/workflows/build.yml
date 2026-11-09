@@ -4,8 +4,9 @@
 name: Build and test
 
 on:
+  # Every pull request, docs-only ones included: main requires this check, and a skipped
+  # workflow would leave the PR waiting for it forever.
   pull_request:
-    paths-ignore: ["docs/**", "**.md"]
   push:
     branches: [main]
     paths-ignore: ["docs/**", "**.md"]

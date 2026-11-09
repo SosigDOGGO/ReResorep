@@ -214,7 +214,7 @@ bool ParseHeader(const uint8_t* file, size_t size, DdsImage& out, size_t& offset
         std::memcpy(&ext, file + offset, sizeof(ext));
         offset += sizeof(ext);
         out.format = DXGI_FORMAT(ext.dxgiFormat);
-        out.arraySize = std::max(1u, ext.arraySize);
+        out.arraySize = ext.arraySize;
         if (ext.resourceDimension == kDimTexture3D) {
             out.isVolume = true;
             out.depth = std::max(1u, hdr.depth);
@@ -234,6 +234,12 @@ bool ParseHeader(const uint8_t* file, size_t size, DdsImage& out, size_t& offset
     if (!GetFormatInfo(out.format).known) return Fail(error, "unsupported pixel format"), false;
     if (out.width == 0 || out.height == 0 || out.width > 16384 || out.height > 16384 || out.mipLevels > 15)
         return Fail(error, "invalid dimensions"), false;
+    // D3D11 limits apply to faces (not cubes) and to every dimension of a volume.
+    if (out.arraySize == 0 || out.arraySize > 2048u / (out.isCubemap ? 6u : 1u))
+        return Fail(error, "invalid array size"), false;
+    if (out.isVolume && (out.arraySize != 1 || out.isCubemap || hdr.depth == 0 ||
+                         std::max({out.width, out.height, out.depth}) > 2048))
+        return Fail(error, "invalid volume dimensions"), false;
     return true;
 }
 }  // namespace
@@ -250,7 +256,7 @@ bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error) {
             ComputeSurfaceLayout(out.format, out.width >> mip, out.height >> mip, layout);
             const uint32_t d = out.isVolume ? std::max(1u, out.depth >> mip) : 1;
             const size_t bytes = layout.size() * d;
-            if (offset + bytes > size) return Fail(error, "truncated pixel data"), false;
+            if (bytes > size - offset || layout.size() > UINT32_MAX) return Fail(error, "truncated pixel data"), false;
             out.subresources.push_back({offset, layout.rowPitch, uint32_t(layout.size())});
             offset += bytes;
         }
@@ -261,7 +267,7 @@ bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error) {
 }
 
 bool LoadTextureFile(const std::wstring& path, DdsImage& out, bool* wasEncrypted, std::string* error) {
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    std::ifstream in(path.c_str(), std::ios::binary | std::ios::ate);
     if (!in) return Fail(error, "cannot open file"), false;
     const std::streamoff len = in.tellg();
     if (len <= 0 || len > (512ll << 20)) return Fail(error, "bad file size"), false;
@@ -282,12 +288,15 @@ bool LoadTextureFile(const std::wstring& path, DdsImage& out, bool* wasEncrypted
 bool LoadTextureMips(const std::wstring& path, uint32_t maxSize, DdsImage& out, bool* wasEncrypted,
                      std::string* error) {
     if (maxSize == 0) return LoadTextureFile(path, out, wasEncrypted, error);
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    std::ifstream in(path.c_str(), std::ios::binary | std::ios::ate);
     if (!in) return Fail(error, "cannot open file"), false;
-    const uint64_t fileSize = uint64_t(in.tellg());
+    const std::streamoff length = in.tellg();
+    if (length <= 0) return Fail(error, "bad file size"), false;
+    const uint64_t fileSize = uint64_t(length);
     in.seekg(0);
     std::vector<uint8_t> head(size_t(std::min<uint64_t>(fileSize, 512)));
-    in.read(reinterpret_cast<char*>(head.data()), std::streamsize(head.size()));
+    if (!in.read(reinterpret_cast<char*>(head.data()), std::streamsize(head.size())))
+        return Fail(error, "read failed"), false;
 
     uint8_t iv[8] = {};
     size_t payload = 0;
@@ -401,9 +410,9 @@ bool IsSnormFormat(DXGI_FORMAT f) {
 bool ReadTextureInfo(const std::wstring& path, DdsImage& out, bool* wasEncrypted) {
     // The header (and DX10 extension) fits in the first 148 bytes; an encrypted pack adds
     // its own header in front, so read a little more and decrypt just that.
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) return false;
-    std::vector<uint8_t> bytes(256);
+    std::vector<uint8_t> bytes(512);  // also fits the longest resorep1 IV and a full DX10 header
     in.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size()));
     bytes.resize(size_t(in.gcount()));
 

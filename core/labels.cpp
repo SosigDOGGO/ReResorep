@@ -27,9 +27,9 @@ std::vector<std::pair<uint32_t, std::string>> LabelStore::Parse(const std::strin
         line = Trim(line);
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
         const size_t sep = line.find_first_of("=,\t");
-        if (sep == std::string::npos || sep == 0 || sep > 10) continue;
+        if (sep == std::string::npos || sep == 0) continue;
         const std::string number = Trim(line.substr(0, sep));
-        if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos) continue;
+        if (number.empty() || number.size() > 10 || number.find_first_not_of("0123456789") != std::string::npos) continue;
         const unsigned long long hash = std::stoull(number);
         if (hash > 0xFFFFFFFFull) continue;
         std::string label = Trim(line.substr(sep + 1));

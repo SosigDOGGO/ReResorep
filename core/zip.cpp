@@ -227,6 +227,10 @@ bool Inflate(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
 // --- Writer -------------------------------------------------------------------------
 
 bool ZipWriter::Open(const std::filesystem::path& path) {
+    if (out_.is_open()) out_.close();
+    entries_.clear();
+    error_.clear();
+    offset_ = 0;
     out_.open(path, std::ios::binary | std::ios::trunc);
     if (!out_) {
         error_ = "cannot create the file";
@@ -240,7 +244,11 @@ bool ZipWriter::Open(const std::filesystem::path& path) {
 }
 
 bool ZipWriter::Add(const std::string& name, const uint8_t* data, size_t size) {
-    if (!out_) return false;
+    if (!out_ || !error_.empty()) return false;
+    if (name.size() > UINT16_MAX) {
+        error_ = "entry name too long";
+        return false;
+    }
     if (offset_ + size + name.size() + 64 > 0xFFFFFFF0ull || entries_.size() >= 0xFFFF) {
         error_ = "the package would be larger than 4 GB";
         return false;
@@ -274,7 +282,7 @@ bool ZipWriter::AddDirectory(const std::string& name) {
 }
 
 bool ZipWriter::Finish() {
-    if (!out_) return false;
+    if (!out_ || !error_.empty()) return false;
     std::vector<uint8_t> cd;
     for (const Central& e : entries_) {
         Put32(cd, kCentralSig);
@@ -314,7 +322,9 @@ bool ZipWriter::Finish() {
 // --- Reader -------------------------------------------------------------------------
 
 bool ZipReader::Open(const std::filesystem::path& path) {
+    if (in_.is_open()) in_.close();
     entries_.clear();
+    error_.clear();
     in_.open(path, std::ios::binary | std::ios::ate);
     if (!in_) {
         error_ = "cannot open the file";
@@ -332,7 +342,7 @@ bool ZipReader::Open(const std::filesystem::path& path) {
     }
     size_t end = std::string::npos;
     for (size_t i = buf.size() - 22 + 1; i-- > 0;)
-        if (Get32(&buf[i]) == kEndSig) {
+        if (Get32(&buf[i]) == kEndSig && i + 22 + Get16(&buf[i + 20]) == buf.size()) {
             end = i;
             break;
         }
@@ -342,13 +352,16 @@ bool ZipReader::Open(const std::filesystem::path& path) {
     }
     const uint16_t count = Get16(&buf[end + 10]);
     const uint32_t cdSize = Get32(&buf[end + 12]), cdOffset = Get32(&buf[end + 16]);
-    if (cdOffset == 0xFFFFFFFF || uint64_t(cdOffset) + cdSize > fileSize_) {
+    if (cdOffset == 0xFFFFFFFF || uint64_t(cdOffset) + cdSize > fileSize_ - tail + end) {
         error_ = "unsupported zip (ZIP64 or damaged)";
         return false;
     }
     std::vector<uint8_t> cd(cdSize);
     in_.seekg(cdOffset);
-    in_.read(reinterpret_cast<char*>(cd.data()), cdSize);
+    if (!in_.read(reinterpret_cast<char*>(cd.data()), cdSize)) {
+        error_ = "could not read zip directory";
+        return false;
+    }
     size_t p = 0;
     for (uint16_t i = 0; i < count; ++i) {
         if (p + 46 > cd.size() || Get32(&cd[p]) != kCentralSig) {
@@ -363,11 +376,11 @@ bool ZipReader::Open(const std::filesystem::path& path) {
         e.size = Get32(&cd[p + 24]);
         const uint16_t nameLen = Get16(&cd[p + 28]), extraLen = Get16(&cd[p + 30]), commentLen = Get16(&cd[p + 32]);
         e.localOffset = Get32(&cd[p + 42]);
-        if (p + 46 + nameLen > cd.size()) {
+        if (p + 46 + nameLen + extraLen + commentLen > cd.size()) {
             error_ = "damaged zip directory";
             return false;
         }
-        e.name.assign(reinterpret_cast<const char*>(&cd[p + 46]), nameLen);
+        e.name.assign(reinterpret_cast<const char*>(cd.data() + p + 46), nameLen);
         p += 46 + size_t(nameLen) + extraLen + commentLen;
         entries_.push_back(std::move(e));
     }
@@ -400,6 +413,10 @@ bool ZipReader::Extract(const Entry& e, std::vector<uint8_t>& out, uint32_t maxS
         error_ = "damaged zip entry";
         return false;
     }
+    if (e.method == 0 && e.compressedSize != e.size) {
+        error_ = "damaged zip entry";
+        return false;
+    }
     std::vector<uint8_t> packed(e.compressedSize);
     in_.seekg(std::streamoff(dataOffset));
     in_.read(reinterpret_cast<char*>(packed.data()), std::streamsize(packed.size()));
@@ -408,10 +425,6 @@ bool ZipReader::Extract(const Entry& e, std::vector<uint8_t>& out, uint32_t maxS
         return false;
     }
     if (e.method == 0) {
-        if (e.compressedSize != e.size) {
-            error_ = "damaged zip entry";
-            return false;
-        }
         out = std::move(packed);
     } else {
         out.assign(e.size, 0);

@@ -12,7 +12,9 @@ if(NOT CONFIG STREQUAL "Release")
 endif()
 
 set(NAME "ReResorep-${VERSION}")
-set(DIR "${OUT}/${NAME}")
+# Build beside the current release so its pinned proxy can be reused on repeated ship runs.
+set(STAGE "${OUT}/.staging")
+set(DIR "${STAGE}/${NAME}")
 set(ZIP "${OUT}/${NAME}-win64.zip")
 
 # The proxy: mods whitelist d3d11.dll by its hash, so while the proxy version stays the one in
@@ -33,9 +35,8 @@ if(PIN_VERSION STREQUAL PROXY_VERSION)
         set(PROXY "")
         file(GLOB CANDIDATES "${OUT}/ReResorep-*/proxy/d3d11.dll")
         foreach(candidate IN LISTS CANDIDATES)
-            string(FIND "${candidate}" "${DIR}/" IN_DIR)  # the folder rebuilt below doesn't count
             file(SHA256 "${candidate}" CANDIDATE_HASH)
-            if(CANDIDATE_HASH STREQUAL PIN_HASH AND NOT IN_DIR EQUAL 0)
+            if(CANDIDATE_HASH STREQUAL PIN_HASH)
                 set(PROXY "${candidate}")
                 break()
             endif()
@@ -55,7 +56,6 @@ else()
 endif()
 
 file(REMOVE_RECURSE "${DIR}")
-file(REMOVE "${ZIP}" "${ZIP}.sha256.txt")
 file(MAKE_DIRECTORY "${DIR}/proxy")
 
 file(COPY "${BIN}/ReResorep.exe" DESTINATION "${DIR}")
@@ -81,15 +81,18 @@ file(SHA256 "${DIR}/proxy/d3d11.dll" DLL_HASH)
 file(CONFIGURE OUTPUT "${DIR}/SHA256SUMS.txt" NEWLINE_STYLE UNIX
      CONTENT "${EXE_HASH}  ReResorep.exe\n${DLL_HASH}  proxy/d3d11.dll\n")
 
-execute_process(COMMAND "${CMAKE_COMMAND}" -E tar cf "${ZIP}" --format=zip "${NAME}"
-                WORKING_DIRECTORY "${OUT}" RESULT_VARIABLE ZIP_RESULT)
+execute_process(COMMAND "${CMAKE_COMMAND}" -E tar cf "${STAGE}/${NAME}-win64.zip" --format=zip "${NAME}"
+                WORKING_DIRECTORY "${STAGE}" RESULT_VARIABLE ZIP_RESULT)
 if(NOT ZIP_RESULT EQUAL 0)
     message(FATAL_ERROR "Creating ${ZIP} failed")
 endif()
+file(REMOVE_RECURSE "${OUT}/${NAME}")
+file(RENAME "${DIR}" "${OUT}/${NAME}")
+file(RENAME "${STAGE}/${NAME}-win64.zip" "${ZIP}")
 file(SHA256 "${ZIP}" ZIP_HASH)
 file(CONFIGURE OUTPUT "${ZIP}.sha256.txt" NEWLINE_STYLE UNIX CONTENT "${ZIP_HASH}  ${NAME}-win64.zip\n")
 
-message(STATUS "Shipping folder: ${DIR}")
+message(STATUS "Shipping folder: ${OUT}/${NAME}")
 message(STATUS "Release zip:     ${ZIP}")
 message(STATUS "SHA-256 (zip):   ${ZIP_HASH}")
 message(STATUS "SHA-256 (proxy): ${DLL_HASH}")

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -53,14 +54,37 @@ std::optional<fs::path> SafeRelative(const std::string& name) {
     return out;
 }
 
-bool WriteFileAtomic(const fs::path& target, const std::vector<uint8_t>& data) {
-    const fs::path tmp = target.wstring() + L".part";
+// Stage beside the destination so a failed export/import leaves the previous file intact.
+class TempOutput {
+public:
+    explicit TempOutput(const fs::path& target) {
+        static std::atomic<unsigned> serial{0};
+        for (;;) {
+            auto candidate = target.parent_path() / (L".reresorep-" + std::to_wstring(GetCurrentProcessId()) +
+                                                     L"-" + std::to_wstring(serial++) + L".tmp");
+            HANDLE h = CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                CloseHandle(h);
+                path = std::move(candidate);
+                return;
+            }
+            if (GetLastError() != ERROR_FILE_EXISTS) return;
+        }
+    }
+    ~TempOutput() { if (!path.empty()) DeleteFileW(path.c_str()); }
+    fs::path path;
+};
+
+bool WriteFileAtomic(const fs::path& target, const std::vector<uint8_t>& data, bool overwrite) {
+    TempOutput tmp(target);
+    if (tmp.path.empty()) return false;
     {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        std::ofstream out(tmp.path, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+        out.close();
         if (!out) return false;
     }
-    return MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    return MoveFileExW(tmp.path.c_str(), target.c_str(), overwrite ? MOVEFILE_REPLACE_EXISTING : 0) != 0;
 }
 
 // Where the mod's files start inside the zip: "<manifest name>/", or a single top-level
@@ -133,8 +157,13 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
     DisabledSet disabled;
     disabled.Load(moddedRoot);
 
+    TempOutput tmp(zipPath);
+    if (tmp.path.empty()) {
+        r.error = "Could not create a temporary file for the package.";
+        return r;
+    }
     ZipWriter zip;
-    if (!zip.Open(zipPath)) {
+    if (!zip.Open(tmp.path)) {
         r.error = "Could not create " + WideToUtf8(zipPath.filename().wstring()) + ": " + zip.error();
         return r;
     }
@@ -143,26 +172,46 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
     const fs::path mod = fs::path(rel).lexically_normal().begin()->wstring();
     if (const std::string game = ReadModGame(moddedRoot / mod); !game.empty())
         manifest += std::string(keys::kGameSha256) + "=" + game + "\r\n";
+    if (options.includeTurnedOff && disabled.IsEffectivelyDisabled(rel)) manifest += "disabled=.\r\n";
     LabelStore packed;
     zip.AddDirectory(name);
 
     std::error_code ec;
     std::vector<fs::path> paths;
     for (fs::recursive_directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) paths.push_back(it->path());
+    if (ec) {
+        r.error = "Could not list the files to export: " + ec.message();
+        return r;
+    }
     std::sort(paths.begin(), paths.end());
     for (const fs::path& path : paths) {
         const fs::path inMod = path.lexically_relative(folder);              // path inside the package's mod
         const fs::path inModded = path.lexically_relative(moddedRoot);       // path for the on/off state
         const bool off = disabled.IsEffectivelyDisabled(inModded);
         if (off && !options.includeTurnedOff) continue;
-        if (fs::is_directory(path, ec)) {
+        const bool directory = fs::is_directory(path, ec);
+        if (ec) {
+            r.error = "Could not inspect " + WideToUtf8(path.wstring()) + ": " + ec.message();
+            return r;
+        }
+        if (directory) {
             if (!zip.AddDirectory(name + "/" + Slashed(inMod))) break;
             ++r.folders;
         } else {
             const std::wstring file = path.filename().wstring();
             if (_wcsicmp(fs::path(file).extension().c_str(), L".dds") != 0) continue;
-            std::ifstream in(path, std::ios::binary);
-            const std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::ifstream in(path, std::ios::binary | std::ios::ate);
+            const std::streamoff size = in.tellg();
+            if (size < 0 || size > (1ll << 30)) {
+                r.error = "Could not read " + WideToUtf8(path.wstring()) + " (1 GB limit per texture).";
+                return r;
+            }
+            std::vector<uint8_t> data(static_cast<size_t>(size));
+            in.seekg(0);
+            if (!in.read(reinterpret_cast<char*>(data.data()), size)) {
+                r.error = "Could not read " + WideToUtf8(path.wstring());
+                return r;
+            }
             if (!zip.AddFile(name + "/" + Slashed(inMod), data.data(), data.size())) break;
             ++r.textures;
             r.bytes += data.size();
@@ -176,6 +225,10 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
         r.error = "Export failed: " + zip.error();
         return r;
     }
+    if (!r.textures) {
+        r.error = "No .dds textures were selected for export.";
+        return r;
+    }
     zip.AddFile(kManifest, reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size());
     if (packed.size()) {
         const std::string text = packed.Serialize();
@@ -183,6 +236,8 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
         r.labels = packed.size();
     }
     if (!zip.Finish()) r.error = "Export failed: " + zip.error();
+    else if (!MoveFileExW(tmp.path.c_str(), zipPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+        r.error = "Could not replace " + WideToUtf8(zipPath.wstring());
     return r;
 }
 
@@ -240,6 +295,10 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
 
     std::error_code ec;
     fs::create_directories(target, ec);
+    if (ec) {
+        r.error = "Could not create " + WideToUtf8(target.wstring()) + ": " + ec.message();
+        return r;
+    }
     for (const auto& e : zip.entries()) {
         std::string name = e.name;
         std::replace(name.begin(), name.end(), '\\', '/');
@@ -265,6 +324,10 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
         const fs::path out = target / *rel;
         if (dir) {
             fs::create_directories(out, ec);
+            if (ec) {
+                r.error = "Could not create " + WideToUtf8(out.wstring()) + ": " + ec.message();
+                return r;
+            }
             ++r.folders;
             continue;
         }
@@ -278,7 +341,7 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
             return r;
         }
         fs::create_directories(out.parent_path(), ec);
-        if (!WriteFileAtomic(out, data)) {
+        if (ec || !WriteFileAtomic(out, data, overwrite)) {
             r.error = "Could not write " + WideToUtf8(out.wstring());
             return r;
         }
@@ -291,8 +354,10 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
     if (manifest && !manifest->disabled.empty()) {
         DisabledSet state;
         state.Load(moddedRoot);
-        for (const std::string& p : manifest->disabled)
-            if (const auto rel = SafeRelative(p)) state.Set(fs::path(folderName) / *rel, true);
+        for (const std::string& p : manifest->disabled) {
+            if (p == ".") state.Set(folderName, true);
+            else if (const auto rel = SafeRelative(p)) state.Set(fs::path(folderName) / *rel, true);
+        }
         if (!state.Save(moddedRoot)) r.error = "Imported, but could not save which textures are turned off.";
     }
     for (const auto& e : zip.entries()) {

@@ -75,7 +75,11 @@
     help.textContent = HELP[mode];
   }
 
-  hue.addEventListener("input", render);
+  let introFrame;
+  hue.addEventListener("input", () => {
+    cancelAnimationFrame(introFrame);
+    render();
+  });
   strength.addEventListener("input", render);
   document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", render));
 
@@ -89,9 +93,9 @@
       const e = 1 - Math.pow(1 - p, 3);
       hue.value = Math.round(from + span * e) % 360;
       render();
-      if (p < 1) requestAnimationFrame(step);
+      if (p < 1) introFrame = requestAnimationFrame(step);
     };
-    requestAnimationFrame(step);
+    introFrame = requestAnimationFrame(step);
   } else {
     render();
   }

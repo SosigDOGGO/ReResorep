@@ -141,6 +141,26 @@ static void TestDdsRoundTrip() {
     }
 }
 
+static void TestDdsArrayAndVolumeHeaders() {
+    const uint8_t pixel = 1;
+    const auto single = WriteDds(DXGI_FORMAT_R8_UNORM, 1, 1, {{&pixel, 1}});
+    auto read = [&](uint32_t dimension, uint32_t flags, uint32_t count, uint32_t depth, size_t pixels) {
+        auto file = single;
+        std::memcpy(file.data() + 24, &depth, 4);       // DDS_HEADER.depth
+        std::memcpy(file.data() + 132, &dimension, 4);  // DDS_HEADER_DXT10.resourceDimension
+        std::memcpy(file.data() + 136, &flags, 4);
+        std::memcpy(file.data() + 140, &count, 4);
+        file.resize(148 + pixels, pixel);
+        DdsImage image;
+        return ParseDds(std::move(file), image);
+    };
+    CHECK(read(3, 4, 1, 0, 6));    // a cube has six faces
+    CHECK(read(4, 0, 1, 2, 2));    // a volume has a single array element
+    CHECK(!read(3, 0, 0, 0, 1));
+    CHECK(!read(4, 0, 2, 1, 2));
+    CHECK(!read(4, 4, 1, 1, 6));
+}
+
 static void TestCategories() {
     namespace fs = std::filesystem;
     wchar_t tmp[MAX_PATH];
@@ -228,6 +248,13 @@ static void TestPartialMips() {
             DdsImage info;
             CHECK(ReadTextureInfo(path.wstring(), info) && info.width == w && info.height == h);
         }
+        auto longIv = enc;
+        longIv.insert(longIv.begin() + 17, 247, 0);
+        longIv[8] = 255;
+        std::ofstream(encPath, std::ios::binary).write(reinterpret_cast<const char*>(longIv.data()), longIv.size());
+        DdsImage info;
+        CHECK(ReadTextureInfo(encPath.wstring(), info) && info.width == w && info.height == h);
+
         fs::remove(plainPath);
         fs::remove(encPath);
     }
@@ -242,6 +269,12 @@ static void TestLabels() {
         CHECK(parsed[0].first == 123 && parsed[0].second == "Ash helmet");
         CHECK(parsed[1].first == 456 && parsed[1].second == "Thermite vest");
         CHECK(parsed[2].first == 789 && parsed[2].second == "UI icon");
+    }
+    const auto quoted = LabelStore::Parse("\"4294967295\",\"Last hash\"\n3123456789 = Spaced\n");
+    CHECK(quoted.size() == 2);
+    if (quoted.size() == 2) {
+        CHECK(quoted[0].first == UINT32_MAX && quoted[0].second == "Last hash");
+        CHECK(quoted[1].first == 3123456789u && quoted[1].second == "Spaced");
     }
     LabelStore store;
     CHECK(store.Merge(parsed, true) == 3);
@@ -289,6 +322,30 @@ static void TestZipFromOtherTool() {
             expected.insert(expected.begin(), {'D', 'D', 'S', ' '});
             CHECK(data == expected);
         }
+    }
+
+    // The EOCD signature is legal text in an archive comment.
+    auto commented = std::vector<uint8_t>(std::begin(kFixtureZip), std::end(kFixtureZip));
+    const std::string comment = "notes PK\x05\x06 followed by more than twenty bytes of text";
+    commented[commented.size() - 2] = uint8_t(comment.size());
+    commented.insert(commented.end(), comment.begin(), comment.end());
+    const fs::path withComment = base / L"comment.zip";
+    WriteBytes(withComment, commented);
+    {
+        ZipReader reader;
+        CHECK(reader.Open(withComment) && reader.entries().size() == 7);
+        CHECK(reader.Open(zipPath) && reader.entries().size() == 7);
+    }
+
+    {
+        ZipWriter writer;
+        CHECK(writer.Open(base / L"invalid.zip"));
+        CHECK(!writer.AddDirectory(std::string(65536, 'x')));
+        CHECK(!writer.Finish());
+        CHECK(writer.Open(base / L"retry.zip"));
+        CHECK(writer.AddDirectory("Empty") && writer.Finish());
+        ZipReader reader;
+        CHECK(reader.Open(base / L"retry.zip") && reader.entries().size() == 1);
     }
 
     // Import: textures land inside the mod folder; traversal entries and non-textures are refused.
@@ -363,6 +420,30 @@ static void TestModPackageRoundTrip() {
     const fs::path onOnly = base / L"on.zip";
     ex = ExportModPackage(modded, L"Ash Elite", onOnly, {false, false}, labels);
     CHECK(ex.error.empty() && ex.textures == 1 && ex.labels == 0);
+    // An exported category can inherit its disabled state from the parent mod.
+    off.Set(L"Ash Elite", true);
+    CHECK(off.Save(modded));
+    CHECK(ExportModPackage(modded, L"Ash Elite/Uniform", full, {true, false}, labels).error.empty());
+    CHECK(ImportModPackage(full, other, "Uniform copy", false, mine).error.empty());
+    CHECK(state.Load(other) && state.IsDisabled(L"Uniform copy"));
+
+    CHECK(!ExportModPackage(modded, L"Ash Elite", full, {false, false}, labels).error.empty());
+    CHECK(InspectModPackage(full).name == "Uniform");
+
+    // A sharing violation must leave the existing zip untouched.
+    HANDLE lock = CreateFileW((modded / L"Ash Elite/Uniform/200.dds").c_str(), GENERIC_READ, 0, nullptr,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(lock != INVALID_HANDLE_VALUE);
+    if (lock != INVALID_HANDLE_VALUE) {
+        CHECK(!ExportModPackage(modded, L"Ash Elite", full, {true, false}, labels).error.empty());
+        CloseHandle(lock);
+        CHECK(InspectModPackage(full).name == "Uniform");
+    }
+
+    // An existing file blocks an empty category in the package.
+    fs::remove(other / L"Ash Copy/Empty");
+    WriteBytes(other / L"Ash Copy/Empty", {});
+    CHECK(!ImportModPackage(onOnly, other, "Ash Copy", false, mine).error.empty());
     fs::remove_all(base);
 }
 
@@ -425,6 +506,7 @@ int main() {
         {"TestContainer", TestContainer},
         {"TestFileNames", TestFileNames},
         {"TestDdsRoundTrip", TestDdsRoundTrip},
+        {"TestDdsArrayAndVolumeHeaders", TestDdsArrayAndVolumeHeaders},
         {"TestCategories", TestCategories},
         {"TestPartialMips", TestPartialMips},
         {"TestLabels", TestLabels},

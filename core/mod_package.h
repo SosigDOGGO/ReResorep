@@ -10,7 +10,7 @@ namespace resorep {
 // A mod package is a plain .zip:
 //   <Name>/...                   the mod folder: categories and .dds files
 //   reresorep_mod.ini            name=..., game_exe_sha256=... (if the mod is for one game),
-//                                plus disabled=<path inside the mod> lines
+//                                plus disabled=<path inside the mod> lines ("." for the mod itself)
 //   labels.txt                   labels for hashes in the package (optional)
 // Zips made by other tools work too: any .dds files are imported, keeping their folders.
 

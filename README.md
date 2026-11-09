@@ -106,8 +106,8 @@ folders kept. Only `.dds` files are ever unpacked, and only inside the modded fo
 like `../file` or `C:\file` are refused, and every file's checksum is verified. Labels from a
 package are added only for hashes you haven't labelled yourself.
 
-If two active textures have the same hash, the game uses the first one by relative path, so loose
-textures beat those in mods. The other copy is labelled *unused (duplicate)*.
+If two active textures have the same hash, the game uses the first one by relative path, ignoring case. A folder named `00-Mod`, for example, sorts before a loose
+texture named `123.dds`. The other copy is labelled *unused (duplicate)*.
 
 The original Resorep only reads loose textures; it ignores sub-folders.
 

@@ -1,5 +1,6 @@
 #include "texture_index.h"
 
+#include <cstring>
 #include <cwctype>
 #include <system_error>
 

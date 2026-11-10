@@ -575,6 +575,8 @@ html:has(.viewer[open]) { overflow: hidden; }
   border-radius: 4px;
 }
 
+.aside + .aside { margin-top: 1rem; }
+
 @media (max-width: 860px) {
   .steps { grid-template-columns: 1fr; }
 }

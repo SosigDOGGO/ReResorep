@@ -27,6 +27,8 @@ Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds
    A texture already in the folder, or already dumped since the game started, is not dumped
    again, even if you delete its file. **Redump** makes a running game dump (and overwrite)
    every texture again as it loads it.
+   Need an editor? We recommend [GIMP](https://www.gimp.org/). It's free, and it opens dumped
+   `.dds` textures and exports your edits back to `.dds`.
 5. Just playing? Turn on **Settings → Low impact mode**. The proxy then only replaces textures:
    no dumping or Redump, and it reads your mods when the game starts instead of watching the
    modded folder. Mods you change while playing apply on the next start, or when a setting

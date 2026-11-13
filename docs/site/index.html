@@ -22,9 +22,10 @@
         <span>ReResorep</span>
       </a>
       <nav class="top-nav" aria-label="Sections">
-        <a href="#setup">Setup</a>
-        <a href="#features">Features</a>
-        <a href="#resorep">Compared to Resorep</a>
+        <a href="#install">Install</a>
+        <a href="#mods">Mods</a>
+        <a href="#create">Make mods</a>
+        <a href="#help">Help</a>
         <button class="theme-toggle" type="button" id="theme-toggle">Light theme</button>
         <a class="btn btn-small" href="https://github.com/SosigDOGGO/ReResorep/releases/latest">Download</a>
       </nav>
@@ -42,6 +43,7 @@
         </p>
         <div class="hero-actions">
           <a class="btn" href="https://github.com/SosigDOGGO/ReResorep/releases/latest">Download ReResorep 2.5.5</a>
+          <a class="btn btn-ghost" href="#install">How to install</a>
           <p class="fine">Windows x64. No Java, runtime or VC++ redistributable needed.</p>
         </div>
       </div>
@@ -104,6 +106,165 @@
       </div>
     </section>
 
+    <section id="install" class="wrap section" aria-labelledby="install-title">
+      <span id="setup"></span>
+      <h2 id="install-title">Install ReResorep</h2>
+      <p class="section-lede">
+        ReResorep has no installer. It's a folder you extract once and keep. Most install problems
+        come from running it straight out of the zip, so take a minute over steps 2 and 3.
+      </p>
+      <ol class="steps steps-4">
+        <li>
+          <h3>Download the zip</h3>
+          <p>
+            On the <a href="https://github.com/SosigDOGGO/ReResorep/releases/latest">latest release</a>,
+            open <em>Assets</em> and download the file ending in <code>-win64.zip</code>.
+            <em>Source code (zip)</em> is the source code and has no app in it.
+          </p>
+        </li>
+        <li>
+          <h3>Extract all of it</h3>
+          <p>
+            Right-click the zip and choose <em>Extract All…</em>. Don't open the zip and
+            double-click <code>ReResorep.exe</code> inside it. Windows then runs the exe from a
+            temporary folder without its <code>proxy</code> folder, and your settings and mods get
+            deleted along with that temporary folder.
+          </p>
+        </li>
+        <li>
+          <h3>Give it its own folder</h3>
+          <p>
+            Put the extracted folder somewhere that's easy to find, like <code>C:\ReResorep</code> or
+            your Documents. <strong>Not</strong> inside the game folder, and not in
+            <code>Program Files</code>. Keep <code>ReResorep.exe</code> and <code>proxy</code>
+            together, and don't move the exe out of the folder.
+          </p>
+        </li>
+        <li>
+          <h3>Add your game</h3>
+          <p>
+            Run <code>ReResorep.exe</code>. In the <strong>Games</strong> tab choose
+            <em>Add game…</em>, pick <code>RainbowSix.exe</code> and press <em>Install</em>.
+            Then press <em>Start</em> or start the game the way you always do. A
+            <code>d3d11.dll</code> already in the game folder, like ReShade, is kept and still loads.
+          </p>
+        </li>
+      </ol>
+
+      <div class="split">
+        <div>
+          <h3 class="split-title">What the folder should look like</h3>
+<pre class="tree" aria-label="The ReResorep folder after extracting it and running the app once"><code>C:\ReResorep\
+  ReResorep.exe
+  proxy\
+    d3d11.dll     <span>Install copies it to the game</span>
+  README.txt
+  modded\        <span>your mods (made on first run)</span>
+  original\      <span>dumped textures (made on first run)</span>
+  reresorep.ini  <span>your settings and games</span></code></pre>
+          <p class="split-note">
+            Everything ReResorep makes stays in this folder. To move it, close ReResorep, move
+            the whole folder, then press <em>Reinstall</em> for each game on the
+            <strong>Games</strong> tab so the game knows where your mods are now.
+          </p>
+        </div>
+        <div>
+          <h3 class="split-title">Finding <code>RainbowSix.exe</code></h3>
+          <ul class="plain">
+            <li>
+              <strong>Steam:</strong> right-click Rainbow Six Siege in your library, then
+              <em>Manage → Browse local files</em>.
+            </li>
+            <li>
+              <strong>Ubisoft Connect:</strong> open the game, then <em>Properties</em>, and under
+              <em>Local files</em> choose <em>Open folder</em>.
+            </li>
+            <li>
+              Pick <code>RainbowSix.exe</code>. <code>RainbowSix_BE.exe</code> is the BattlEye
+              launcher and <code>RainbowSix_Vulkan.exe</code> doesn't use DirectX 11, so neither
+              loads the proxy.
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="aside">
+        <strong>"Windows protected your PC"?</strong> Windows SmartScreen can show this for apps
+        that aren't downloaded by many people yet. Choose <em>More info</em>, then <em>Run anyway</em>.
+        Only do this for a copy you got from the
+        <a href="https://github.com/SosigDOGGO/ReResorep/releases/latest">GitHub releases page</a>.
+      </p>
+      <p class="aside">
+        <strong>Don't copy <code>d3d11.dll</code> into the game folder by hand.</strong>
+        <em>Install</em> also writes a <code>dllsettings.ini</code> next to it that tells the proxy
+        where your mods are. Without it, the proxy looks in the game folder instead and finds none
+        of them.
+      </p>
+    </section>
+
+    <section id="mods" class="wrap section" aria-labelledby="mods-title">
+      <h2 id="mods-title">Installing mods</h2>
+      <p class="section-lede">
+        <strong>Don't unzip mods.</strong> Give ReResorep the <code>.zip</code> and it unpacks the
+        textures into the right folder itself, checks every file and keeps the mod's categories.
+      </p>
+      <ol class="steps">
+        <li>
+          <h3>A mod in a <code>.zip</code></h3>
+          <p>
+            Drag the <code>.zip</code> onto the ReResorep window, or use <em>Import mod…</em> in the
+            <strong>Mods</strong> tab. You can rename the mod before it's imported.
+          </p>
+        </li>
+        <li>
+          <h3>Single <code>.dds</code> textures</h3>
+          <p>
+            Drag them onto the window, or use <em>Import .dds…</em>. Files that aren't named after
+            a hash get asked which texture they replace.
+          </p>
+        </li>
+        <li>
+          <h3>A <code>.rar</code>, <code>.7z</code> or an unpacked folder</h3>
+          <p>
+            Extract it somewhere temporary first. Then in the <strong>Mods</strong> tab press
+            <em>Open folder</em> and copy the mod's folder into the folder that opens.
+          </p>
+        </li>
+      </ol>
+
+      <div class="places">
+        <div class="place place-ok">
+          <h3>Mods go here</h3>
+          <p>
+            The <code>modded</code> folder inside your ReResorep folder, for example
+            <code>C:\ReResorep\modded\Ash Elite\</code>. A folder per mod is fine, and so is
+            any depth of folders inside it.
+          </p>
+          <p>
+            <em>Open folder</em> in the <strong>Mods</strong> tab always opens the right one, also
+            when you changed it in Settings or picked a game with its own folders at the top.
+          </p>
+        </div>
+        <div class="place place-bad">
+          <h3>Not in any of these</h3>
+          <ul>
+            <li>The game folder, next to <code>RainbowSix.exe</code></li>
+            <li><code>original</code>: that's where dumps go, and nothing in it is loaded</li>
+            <li><code>proxy</code>, or loose next to <code>ReResorep.exe</code></li>
+            <li>Downloads, the Desktop, or anywhere else outside <code>modded</code></li>
+            <li>Still zipped inside <code>modded</code>: only <code>.dds</code> files are read</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="aside">
+        Textures have to keep their names: <code>&lt;hash&gt;.dds</code> or
+        <code>&lt;hash&gt;~name.dds</code>, like <code>2233445566.dds</code>. A renamed file is
+        skipped. Changes reach a running game within about a second, but textures it has already
+        loaded only change when it loads them again, for example on the next map.
+      </p>
+    </section>
+
     <section id="look" class="wrap section" aria-labelledby="look-title">
       <h2 id="look-title">What it looks like</h2>
       <div class="shots">
@@ -137,17 +298,9 @@
       </div>
     </section>
 
-    <section id="setup" class="wrap section" aria-labelledby="setup-title">
-      <h2 id="setup-title">Set it up in three steps</h2>
+    <section id="create" class="wrap section" aria-labelledby="create-title">
+      <h2 id="create-title">Make your own mods</h2>
       <ol class="steps">
-        <li>
-          <h3>Add your game</h3>
-          <p>
-            Open the <strong>Games</strong> tab, choose <em>Add game…</em>, pick
-            <code>RainbowSix.exe</code> and press <em>Install</em>. If the folder already has a
-            <code>d3d11.dll</code>, like ReShade, it's kept and still loads.
-          </p>
-        </li>
         <li>
           <h3>Find the textures you want</h3>
           <p>
@@ -160,6 +313,13 @@
           <p>
             Select a dump and choose <em>Replace with .dds…</em>, or drag <code>.dds</code> files
             onto the window. Changes reach a running game within about a second.
+          </p>
+        </li>
+        <li>
+          <h3>Share them</h3>
+          <p>
+            Right-click your mod in the <strong>Mods</strong> sidebar and choose <em>Export…</em>.
+            Others install the <code>.zip</code> by dropping it onto their ReResorep window.
           </p>
         </li>
       </ol>
@@ -232,6 +392,60 @@
           <dt>Nothing phones home</dt>
           <dd>
             No analytics and no update check. The original's Google Analytics and version ping are gone.
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section id="help" class="wrap section" aria-labelledby="help-title">
+      <h2 id="help-title">If something's wrong</h2>
+      <dl class="features help">
+        <div class="feature">
+          <dt>"proxy\d3d11.dll is missing next to ReResorep.exe"</dt>
+          <dd>
+            ReResorep was started from inside the zip, or <code>ReResorep.exe</code> was moved out
+            of its folder. Extract the whole zip (see <a href="#install">Install</a>) and run the
+            exe from the extracted folder.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>My mods and settings disappeared</dt>
+          <dd>
+            If ReResorep was run from inside the zip, it saved everything in a temporary folder
+            that Windows has since cleaned up. Extract the zip, run it from there and import your
+            mods again.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Install says "permission denied"</dt>
+          <dd>
+            The game is in a folder Windows protects, such as <code>Program Files</code>.
+            Right-click <code>ReResorep.exe</code>, choose <em>Run as administrator</em>, press
+            <em>Install</em>, then close it and run it normally from then on.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>The game starts, but nothing changes</dt>
+          <dd>
+            Check, in this order: the game is a DirectX&nbsp;11 build (Y10S1 and later are
+            DirectX&nbsp;12 only); you added <code>RainbowSix.exe</code>; the Games tab says the
+            proxy is installed; the mod is in <code>modded</code> and its checkbox is on; and in
+            shared folders, the mod isn't marked <em>Made for</em> another build.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>"Proxy modified" or "damaged"</dt>
+          <dd>
+            The <code>d3d11.dll</code> in the game folder was damaged or changed by something else.
+            Press <em>Repair</em> on the Games tab. If <code>ReResorep.exe</code> itself won't
+            start, download ReResorep again.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Removing ReResorep</dt>
+          <dd>
+            Press <em>Uninstall</em> for each game on the Games tab. That puts back any
+            <code>d3d11.dll</code> the game had before. Then delete the ReResorep folder.
           </dd>
         </div>
       </dl>

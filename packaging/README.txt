@@ -17,14 +17,23 @@ ReResorep for offline / modded setups.
 
 Getting started
 ------------------------------------------------------------------------------
-1. Unzip this folder anywhere you like (not inside the game folder) and run
-   ReResorep.exe. Keep the "proxy" folder next to it.
+1. Right-click the zip -> "Extract All...", put the folder anywhere you like
+   (not inside the game folder or Program Files) and run ReResorep.exe from
+   there. Don't run it from inside the zip: Windows then starts it from a
+   temporary folder without "proxy", and your mods and settings get lost.
+   Keep the "proxy" folder next to ReResorep.exe.
 2. Games tab -> "Add game..." -> pick the game's exe (for Siege: RainbowSix.exe)
    -> "Install". If the game folder is in Program Files and this fails, run
    ReResorep as administrator once.
 3. Mods tab -> "Import mod..." for a mod package (.zip), or "Import .dds..."
-   for single textures. You can also drag files onto the window.
+   for single textures. You can also drag files onto the window. Don't unzip
+   mods yourself: ReResorep puts them in the right place.
 4. Press "Start" in the Games tab, or start the game as usual.
+
+Mods must end up in the "modded" folder in this folder (Mods tab -> "Open
+folder" opens it). Mods put in the game folder, in "original", in "proxy" or
+anywhere else are not loaded. For a .rar or .7z mod, extract it somewhere
+temporary and copy its folder into the one "Open folder" shows.
 
 Changes you make while the game runs are picked up within about a second, for
 textures the game loads after that (for example on the next map).

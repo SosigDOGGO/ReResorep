@@ -711,3 +711,63 @@ tbody td:first-of-type { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Install and mods guides */
+
+.btn-ghost {
+  margin-left: 0.6rem;
+  background: none;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+.btn-ghost:hover { background: var(--panel); }
+.btn-ghost:active { background: var(--code-bg); }
+
+.steps-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2rem; }
+
+@media (max-width: 1100px) {
+  .steps-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .steps-4 { grid-template-columns: 1fr; }
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2rem 3rem;
+  margin-top: 2.75rem;
+}
+.split-title { font-size: var(--s1); margin-bottom: 0.6rem; }
+.split-title code { font-size: 0.8em; }
+.split-note { margin-top: 0.8rem; color: var(--muted); max-width: 34rem; }
+
+.plain { margin: 0; padding-left: 1.1rem; color: var(--muted); max-width: 34rem; }
+.plain li + li { margin-top: 0.55rem; }
+.plain strong { color: var(--ink); }
+
+.places {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  margin-top: 2.5rem;
+}
+.place {
+  padding: 1.1rem 1.25rem;
+  background: var(--panel);
+  border-radius: 4px;
+  border-top: 3px solid;
+}
+.place-ok { border-top-color: #3fb37f; }
+.place-bad { border-top-color: #e5534b; }
+.place h3 { font-size: var(--s1); }
+.place p, .place ul { margin: 0.55rem 0 0; color: var(--muted); }
+.place ul { padding-left: 1.1rem; }
+.place li + li { margin-top: 0.35rem; }
+
+.help .feature dt { font-size: var(--s0); line-height: 1.3; }
+
+@media (max-width: 760px) {
+  .split, .places { grid-template-columns: minmax(0, 1fr); }
+  .btn-ghost { margin: 0.75rem 0 0; }
+}

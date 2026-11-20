@@ -15,6 +15,7 @@
 
 #include "app.h"
 #include "integrity.h"
+#include "settings.h"
 #include "updater.h"
 #include "version.h"
 
@@ -171,7 +172,7 @@ void SetupStyle(float scale) {
     const std::filesystem::path segoe = std::filesystem::path(fonts) / L"Fonts" / L"segoeui.ttf";
     std::error_code ec;
     if (std::filesystem::exists(segoe, ec))
-        io.Fonts->AddFontFromFileTTF(segoe.string().c_str(), 17.0f * scale);
+        io.Fonts->AddFontFromFileTTF(resorep::WideToUtf8(segoe.wstring()).c_str(), 17.0f * scale);
     else
         io.Fonts->AddFontDefault();
 }

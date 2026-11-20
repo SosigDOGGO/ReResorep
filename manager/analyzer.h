@@ -65,6 +65,7 @@ private:
 
     Entry* Lookup(const std::filesystem::path& path, int64_t modified, uint64_t size);  // needs mutex_
     void Worker();
+    void PruneMissing();
     void LoadCache();
     void SaveCache();
 

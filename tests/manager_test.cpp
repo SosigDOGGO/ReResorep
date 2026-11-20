@@ -205,6 +205,20 @@ static void TestSettingsAndHashing() {
     CHECK(!forgotten.UsesOwnFolders(exe) && forgotten.FoldersFor(exe).first == s.moddedFolder);
     CHECK(forgotten.ExeSha(exe).empty() && forgotten.NeedsHash(exe));
 
+    // Hand-edited values that would point games\<folder> outside games\ are ignored.
+    {
+        IniFile ini;
+        CHECK(ini.Load(iniFile));
+        const std::string path = WideToUtf8(exe.wstring());
+        ini.SetAll("game_own_folders", {"..|" + path});
+        ini.SetAll("game_sha256", {"../../x|1|2||" + path});
+        CHECK(ini.Save(iniFile));
+        ManagerSettings edited;
+        edited.Load();
+        CHECK(!edited.UsesOwnFolders(exe) && edited.ExeSha(exe).empty());
+        CHECK(GameFolder("..") == ExeDirectory() / L"games" / L"invalid");
+    }
+
     fs::remove(iniFile);
     fs::remove_all(GameFolder(h.sha256).parent_path());
     fs::remove_all(root);
@@ -237,6 +251,21 @@ static void TestBatch() {
     DisabledSet saved;
     saved.Load(modded);
     CHECK(saved.IsDisabled(L"Mod/202.dds") && saved.IsDisabled(L"203.dds"));
+
+    // Import: a new file is copied in; without overwrite an existing one is kept.
+    // (Overwriting moves the old file to the Recycle Bin, which this test leaves alone.)
+    const fs::path source = root / L"incoming.dds";
+    Touch(source, "new");
+    CHECK(lib.Import(source, 301, "", false).empty() && fs::exists(modded / L"301.dds"));
+    CHECK(lib.Import(source, 302, "hair", true, L"Mod").empty() && fs::exists(modded / L"Mod/302~hair.dds"));
+    Touch(modded / L"303.dds", "old");
+    CHECK(!lib.Import(source, 303, "", false).empty());
+    {
+        std::ifstream in(modded / L"303.dds");
+        std::string text;
+        std::getline(in, text);
+        CHECK(text == "old");
+    }
     fs::remove_all(root);
 }
 

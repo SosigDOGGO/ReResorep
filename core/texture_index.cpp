@@ -1,7 +1,6 @@
 #include "texture_index.h"
 
 #include <cstring>
-#include <cwctype>
 #include <system_error>
 
 #include "mod_state.h"
@@ -13,14 +12,16 @@ std::optional<uint32_t> ParseModFileName(const std::wstring& fileName) {
     const size_t dot = fileName.rfind(L'.');
     if (dot == std::wstring::npos || _wcsicmp(fileName.c_str() + dot, L".dds") != 0) return std::nullopt;
 
+    // ASCII digits only, as "%u" writes them. std::iswdigit would also accept "²" and full-width
+    // digits, which std::stoull then rejects with an exception (a crash in the game's process).
     size_t end = 0;
-    while (end < dot && std::iswdigit(fileName[end])) ++end;
+    uint64_t value = 0;
+    while (end < dot && end <= 10 && fileName[end] >= L'0' && fileName[end] <= L'9')
+        value = value * 10 + uint64_t(fileName[end++] - L'0');
     if (end == 0 || end > 10) return std::nullopt;
     if (end != dot && fileName[end] != L'~') return std::nullopt;
     // The original compared against "%u", so a leading zero never matched.
     if (fileName[0] == L'0' && end > 1) return std::nullopt;
-
-    const unsigned long long value = std::stoull(fileName.substr(0, end));
     if (value > 0xFFFFFFFFull) return std::nullopt;
     return uint32_t(value);
 }

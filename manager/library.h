@@ -60,6 +60,8 @@ public:
     const std::vector<TextureFile>& mods() const { return mods_; }
     const std::vector<TextureFile>& dumps() const { return dumps_; }
     const std::vector<ModFolder>& folders() const { return folders_; }  // depth-first order
+    // Files in either folder whose names crash older proxies (IsUnsafeTextureName).
+    const std::vector<std::filesystem::path>& unsafeNames() const { return unsafeNames_; }
     // The build these folders belong to (a game's own folders), "" for the shared Default ones.
     // Decides which mods count as active, the same way that game's proxy does.
     void SetGame(const std::string& exeSha256);
@@ -108,6 +110,7 @@ private:
     DisabledSet disabled_;
     std::vector<TextureFile> mods_, dumps_;
     std::vector<ModFolder> folders_;
+    std::vector<std::filesystem::path> unsafeNames_;
     std::unordered_map<uint32_t, std::filesystem::path> active_;
     std::string game_;
     std::map<std::string, std::unordered_map<uint32_t, std::filesystem::path>> winners_;

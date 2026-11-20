@@ -9,6 +9,7 @@
 #include "bc_encode.h"
 #include "dds.h"
 #include "png_export.h"
+#include "settings.h"
 
 namespace resorep::ui {
 namespace {
@@ -80,7 +81,7 @@ const char* TintUnsupported(DXGI_FORMAT format) {
 }
 
 std::string TintTexture(const std::filesystem::path& in, const std::filesystem::path& out, const TintSettings& s) {
-    const std::string name = in.filename().string();
+    const std::string name = WideToUtf8(in.filename().wstring());
     DdsImage img;
     bool encrypted = false;
     std::string error;

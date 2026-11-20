@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -390,14 +391,44 @@ bool TextureAnalyzer::AnalyzeNow(const fs::path& path, TextureTraits& out) {
     return true;
 }
 
+void TextureAnalyzer::PruneMissing() {
+    // Results for files that are gone (deleted dumps, renamed mods) would otherwise stay in the
+    // cache file for good. Checked here, off the UI thread, once per start.
+    std::vector<std::wstring> paths;
+    {
+        std::lock_guard lock(mutex_);
+        for (const auto& [path, e] : entries_)
+            if (e.done) paths.push_back(path);
+    }
+    std::vector<std::wstring> missing;
+    for (const std::wstring& p : paths) {
+        std::error_code ec;
+        if (!fs::exists(p, ec) && !ec) missing.push_back(p);
+    }
+    if (missing.empty()) return;
+    std::lock_guard lock(mutex_);
+    for (const std::wstring& p : missing)
+        if (auto it = entries_.find(p); it != entries_.end() && it->second.done) entries_.erase(it);
+    unsaved_ += missing.size();
+}
+
 void TextureAnalyzer::Worker() {
     Gpu gpu;
     const bool gpuOk = gpu.Init(useWarp_);
+    PruneMissing();
     for (;;) {
         std::wstring path;
         {
             std::unique_lock lock(mutex_);
-            wake_.wait(lock, [this] { return stop_ || !queue_.empty(); });
+            // While a game dumps textures one at a time the queue keeps running dry: results are
+            // written once 250 have piled up, or after a few quiet seconds, not after every file.
+            if (!wake_.wait_for(lock, std::chrono::seconds(5), [this] { return stop_ || !queue_.empty(); })) {
+                if (unsaved_) {
+                    lock.unlock();
+                    SaveCache();
+                }
+                continue;
+            }
             if (stop_) return;
             path = std::move(queue_.front());
             queue_.pop_front();
@@ -417,7 +448,7 @@ void TextureAnalyzer::Worker() {
                 it->second.traits = traits;
                 it->second.done = true;
             }
-            save = ++unsaved_ >= 250 || queue_.empty();
+            save = ++unsaved_ >= 250;
         }
         if (save) SaveCache();
     }

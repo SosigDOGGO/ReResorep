@@ -35,6 +35,10 @@ bool IsOurProxy(const fs::path& dll) { return FileContains(dll, kProxyMarker); }
 bool IsAnyProxy(const fs::path& dll) { return IsOurProxy(dll) || IsLegacyProxy(dll); }
 bool IsMicrosoftDll(const fs::path& dll) { return FileCompanyName(dll) == L"Microsoft Corporation"; }
 
+bool IsLowerHex(const std::string& s, size_t length) {
+    return s.size() == length && s.find_first_not_of("0123456789abcdef") == std::string::npos;
+}
+
 std::string Describe(const char* what, const std::error_code& ec) {
     std::string msg = std::string(what) + ": " + ec.message();
     if (ec == std::errc::permission_denied) msg += " (try running ReResorep as administrator)";
@@ -97,13 +101,21 @@ void ManagerSettings::Load() {
             continue;
         ExeHash h{std::strtoull(line.c_str() + a + 1, nullptr, 10), std::strtoll(line.c_str() + b + 1, nullptr, 10),
                   line.substr(0, a), line.substr(c + 1, d - c - 1)};
+        // A hash names folders (games\<hash>), so only real ones are taken; anything else is
+        // worked out again from the exe.
+        // ("" is a hash that could not be worked out: not retried until the exe changes.)
+        if (!h.sha256.empty() && !IsLowerHex(h.sha256, 64)) h = {};
+        if (!IsLowerHex(h.previous, 64)) h.previous.clear();
         exeHashes[GameKey(Utf8ToWide(line.substr(d + 1)))] = std::move(h);
     }
     // "<its folder in games>|<exe path>"
     ownFolders.clear();
     for (const std::string& line : ini.GetAll("game_own_folders")) {
         const size_t bar = line.find('|');
-        if (bar != std::string::npos && bar > 0) ownFolders[GameKey(Utf8ToWide(line.substr(bar + 1)))] = line.substr(0, bar);
+        // Only a folder name ReResorep makes (16 hex digits): an edited value such as ".." would
+        // point games\<it> elsewhere, and "Remove completely" recycles that folder.
+        if (bar != std::string::npos && IsLowerHex(line.substr(0, bar), 16))
+            ownFolders[GameKey(Utf8ToWide(line.substr(bar + 1)))] = line.substr(0, bar);
     }
     profile = Utf8ToWide(ini.GetOr("ui_profile", ""));
 }
@@ -171,7 +183,9 @@ std::wstring GameKey(const fs::path& exe) {
 }
 
 fs::path GameFolder(const std::string& exeSha256) {
-    return ExeDirectory() / L"games" / Utf8ToWide(exeSha256.substr(0, 16));
+    // Callers pass a checked hash; anything else still stays inside games\.
+    const std::string name = exeSha256.substr(0, 16);
+    return ExeDirectory() / L"games" / Utf8ToWide(IsLowerHex(name, 16) ? name : "invalid");
 }
 
 std::string ManagerSettings::ExeSha(const fs::path& exe) const {
@@ -345,7 +359,12 @@ std::string InstallProxy(const fs::path& exe, const ManagerSettings& settings) {
 
     if (fs::exists(dll, ec) && !IsAnyProxy(dll)) {
         // The game (or a tool like ReShade) already has a d3d11.dll: keep it and chain to it.
-        if (fs::exists(ori, ec)) fs::rename(ori, dir / L"ori_d3d11.dll.bak", ec);
+        if (fs::exists(ori, ec)) {
+            // Never over an earlier backup: ori_d3d11.dll.bak, then .bak2, .bak3...
+            fs::path bak = dir / L"ori_d3d11.dll.bak";
+            for (int i = 2; fs::exists(bak, ec) && !ec; ++i) bak = dir / (L"ori_d3d11.dll.bak" + std::to_wstring(i));
+            if (!ec) fs::rename(ori, bak, ec);
+        }
         if (!ec) fs::rename(dll, ori, ec);
         if (ec) return Describe("Could not keep the existing d3d11.dll", ec);
     }

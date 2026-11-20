@@ -277,6 +277,7 @@ private:
     std::string statusText_;
     bool statusIsError_ = false;
     std::chrono::steady_clock::time_point statusTime_;
+    std::vector<std::filesystem::path> warnedUnsafe_;  // the Library::unsafeNames() last warned about
 };
 
 }  // namespace resorep::ui

@@ -21,6 +21,24 @@ void Put32(std::vector<uint8_t>& v, uint32_t x) {
     Put16(v, uint16_t(x >> 16));
 }
 
+// An entry name without the UTF-8 flag. Many tools write UTF-8 anyway; Windows' own zip folders
+// and older tools use the DOS code page (437 in the US and UK, 850 in western Europe), so a name
+// that isn't valid UTF-8 is read in this PC's DOS code page.
+std::string LegacyNameToUtf8(const std::string& name) {
+    if (name.empty()) return name;
+    const int n = int(name.size());  // at most 65535 (a 16-bit field)
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.data(), n, nullptr, 0) > 0) return name;
+    const int wn = MultiByteToWideChar(CP_OEMCP, 0, name.data(), n, nullptr, 0);
+    if (wn <= 0) return name;
+    std::wstring w(size_t(wn), L'\0');
+    MultiByteToWideChar(CP_OEMCP, 0, name.data(), n, w.data(), wn);
+    const int un = WideCharToMultiByte(CP_UTF8, 0, w.data(), wn, nullptr, 0, nullptr, nullptr);
+    if (un <= 0) return name;
+    std::string out(size_t(un), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), wn, out.data(), un, nullptr, nullptr);
+    return out;
+}
+
 // --- Inflate (canonical Huffman decoding, after zlib's "puff" reference decoder) -------
 
 struct Huffman {
@@ -389,6 +407,7 @@ bool ZipReader::Open(const std::filesystem::path& path) {
             return false;
         }
         e.name.assign(reinterpret_cast<const char*>(cd.data() + p + 46), nameLen);
+        if (!(e.flags & kFlagUtf8)) e.name = LegacyNameToUtf8(e.name);
         p += 46 + size_t(nameLen) + extraLen + commentLen;
         entries_.push_back(std::move(e));
     }

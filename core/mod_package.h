@@ -51,7 +51,13 @@ PackageResult ImportModPackage(const std::filesystem::path& zipPath, const std::
                                const std::string& modName, bool overwrite, LabelStore& labels,
                                const std::string& gameSha256 = {});
 
-// Folder name safe to create on Windows ("" if nothing usable is left).
+// Folder name safe to create on Windows ("" if nothing usable is left). A reserved device name
+// such as "CON" gets a trailing "_".
 std::wstring SafeFolderName(const std::string& name);
+
+// A .dds whose name starts with digit-like characters that aren't ASCII digits ("²1.dds",
+// full-width digits). Proxy 2.5.0 and older crash on "²", "³" and "¹" and read full-width digits
+// as a hash, so such files are never imported and the manager warns about them.
+bool IsUnsafeTextureName(const std::wstring& fileName);
 
 }  // namespace resorep

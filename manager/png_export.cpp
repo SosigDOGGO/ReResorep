@@ -12,6 +12,7 @@
 
 #include "analyzer.h"
 #include "dds.h"
+#include "settings.h"
 
 namespace resorep::ui {
 namespace {
@@ -54,7 +55,7 @@ std::string WritePng(const std::filesystem::path& path, uint32_t width, uint32_t
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
         FAILED(factory->CreateStream(&stream)) ||
         FAILED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)))
-        return "Could not create " + path.filename().string() + ".";
+        return "Could not create " + WideToUtf8(path.filename().wstring()) + ".";
     const bool ok = SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
                     SUCCEEDED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)) &&
                     SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) &&
@@ -62,7 +63,7 @@ std::string WritePng(const std::filesystem::path& path, uint32_t width, uint32_t
                     format == GUID_WICPixelFormat32bppBGRA &&
                     SUCCEEDED(frame->WritePixels(height, width * 4, UINT(px.size()), px.data())) &&
                     SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
-    return ok ? std::string() : "Could not write " + path.filename().string() + ".";
+    return ok ? std::string() : "Could not write " + WideToUtf8(path.filename().wstring()) + ".";
 }
 
 }  // namespace
@@ -165,7 +166,7 @@ std::string ExportPng(const std::filesystem::path& texture, const std::filesyste
     bool encrypted = false;
     std::string error;
     if (!LoadTextureFile(texture.wstring(), img, &encrypted, &error))
-        return error.empty() ? "Could not read " + texture.filename().string() + "." : error;
+        return error.empty() ? "Could not read " + WideToUtf8(texture.filename().wstring()) + "." : error;
     if (encrypted) return "Encrypted (resorep1) textures can't be exported.";
     if (img.isVolume) return "3D (volume) textures can't be exported as PNG.";
     if (img.subresources.empty() || !img.width || !img.height) return "This texture has no image data.";

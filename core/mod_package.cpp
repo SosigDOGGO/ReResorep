@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -34,8 +35,23 @@ std::string Slashed(const fs::path& p) {
     return s;
 }
 
+// CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM1-9 and LPT1-9 (also with any extension, and COM¹ to
+// LPT³ with superscript digits) open a device instead of a file on Windows.
+bool IsReservedName(const std::wstring& part) {
+    std::wstring stem = part.substr(0, part.find(L'.'));
+    while (!stem.empty() && stem.back() == L' ') stem.pop_back();
+    for (wchar_t& c : stem) c = wchar_t(std::towupper(c));
+    if (stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" || stem == L"CONIN$" ||
+        stem == L"CONOUT$")
+        return true;
+    if (stem.size() == 4 && (stem.starts_with(L"COM") || stem.starts_with(L"LPT")))
+        return (stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == L'¹' || stem[3] == L'²' ||
+               stem[3] == L'³';
+    return false;
+}
+
 // Splits a zip path into components, refusing anything that could land outside the
-// target folder: "..", ".", drive letters, absolute paths, reserved characters.
+// target folder: "..", ".", drive letters, absolute paths, reserved characters and names.
 std::optional<fs::path> SafeRelative(const std::string& name) {
     std::wstring w = Utf8ToWide(name);
     std::replace(w.begin(), w.end(), L'\\', L'/');
@@ -48,6 +64,7 @@ std::optional<fs::path> SafeRelative(const std::string& name) {
         if (part == L"." || part == L".." || part.find_first_of(L":<>\"|?*") != std::wstring::npos) return std::nullopt;
         if (std::any_of(part.begin(), part.end(), [](wchar_t c) { return c < 32; })) return std::nullopt;
         if (part.back() == L' ' || part.back() == L'.') return std::nullopt;  // Windows would silently trim these
+        if (IsReservedName(part)) return std::nullopt;
         out /= part;
     }
     if (out.empty()) return std::nullopt;
@@ -141,7 +158,17 @@ std::wstring SafeFolderName(const std::string& name) {
     while (!w.empty() && (w.back() == L' ' || w.back() == L'.')) w.pop_back();
     while (!w.empty() && w.front() == L' ') w.erase(w.begin());
     if (w == L"." || w == L"..") w.clear();
+    if (IsReservedName(w)) w.insert(std::min(w.find(L'.'), w.size()), L"_");  // "CON.x" -> "CON_.x"
     return w;
+}
+
+bool IsUnsafeTextureName(const std::wstring& fileName) {
+    if (!IsDds(WideToUtf8(fileName))) return false;
+    for (wchar_t c : fileName) {
+        if (!std::iswdigit(c)) return false;
+        if (c < L'0' || c > L'9') return true;
+    }
+    return false;
 }
 
 PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& rel, const fs::path& zipPath,
@@ -321,7 +348,7 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
             continue;
         }
         const auto rel = SafeRelative(name);
-        if (!rel) {
+        if (!rel || (!dir && IsUnsafeTextureName(rel->filename().wstring()))) {
             ++r.skipped;
             continue;
         }

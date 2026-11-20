@@ -190,6 +190,7 @@ void Library::Refresh() {
     mods_.clear();
     dumps_.clear();
     folders_.clear();
+    unsafeNames_.clear();
     active_.clear();
     disabled_.Load(modded_);
 
@@ -208,8 +209,12 @@ void Library::Refresh() {
             continue;
         }
         if (!it->is_regular_file(ec)) continue;
-        const auto hash = ParseModFileName(it->path().filename().wstring());
-        if (!hash) continue;
+        const std::wstring name = it->path().filename().wstring();
+        const auto hash = ParseModFileName(name);
+        if (!hash) {
+            if (IsUnsafeTextureName(name)) unsafeNames_.push_back(it->path());
+            continue;
+        }
         TextureFile f = MakeFile(*it, *hash);
         f.relDir = DisabledSet::Slashed(rel.parent_path());
         f.selfDisabled = disabled_.IsDisabled(rel);
@@ -218,7 +223,9 @@ void Library::Refresh() {
     }
     for (fs::directory_iterator it(original_, ec), end; !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec)) continue;
-        if (const auto hash = ParseModFileName(it->path().filename().wstring())) dumps_.push_back(MakeFile(*it, *hash));
+        const std::wstring name = it->path().filename().wstring();
+        if (const auto hash = ParseModFileName(name)) dumps_.push_back(MakeFile(*it, *hash));
+        else if (IsUnsafeTextureName(name)) unsafeNames_.push_back(it->path());
     }
 
     std::sort(folders_.begin(), folders_.end(),
@@ -422,6 +429,15 @@ std::string Library::Import(const fs::path& source, uint32_t hash, const std::st
     const fs::path target = TargetPath(hash, label, relDir);
     std::error_code ec;
     if (fs::equivalent(source, target, ec)) return {};
+    // A texture it replaces goes to the Recycle Bin, like every other replace or delete here,
+    // so dropping a file of the same name over a mod can be undone.
+    if (overwrite) {
+        const bool exists = fs::exists(target, ec);
+        if (ec) return ErrorText(ec);  // can't tell whether there is a file to keep
+        if (exists && !MoveToRecycleBin(target))
+            return "Could not move the existing " + WideToUtf8(target.filename().wstring()) +
+                   " to the Recycle Bin (in use by the game?).";
+    }
     fs::create_directories(target.parent_path(), ec);
     fs::copy_file(source, target, overwrite ? fs::copy_options::overwrite_existing : fs::copy_options::none, ec);
     Refresh();

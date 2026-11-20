@@ -113,6 +113,106 @@ static void TestFileNames() {
     CHECK(!ParseModFileName(L"123abc.dds"));
     CHECK(!ParseModFileName(L"123.png"));
     CHECK(!ParseModFileName(L"hair.dds"));
+    // Only ASCII digits: MSVC's iswdigit also accepts these, and "²" made stoull throw.
+    CHECK(!ParseModFileName(L"².dds"));
+    CHECK(!ParseModFileName(L"²1.dds"));
+    CHECK(!ParseModFileName(L"1³~x.dds"));
+    CHECK(!ParseModFileName(L"１２.dds"));  // full-width digits
+    CHECK(!ParseModFileName(L"١٢.dds"));  // Arabic-Indic digits
+    CHECK(!ParseModFileName(L"12345678901.dds"));
+    CHECK(!ParseModFileName(L"99999999999~a.dds"));
+}
+
+static std::vector<uint8_t> Pattern(size_t n, int seed);
+static void WriteBytes(const std::filesystem::path& p, const std::vector<uint8_t>& d);
+
+static void TestUnsafeNames() {
+    namespace fs = std::filesystem;
+    CHECK(IsUnsafeTextureName(L"²1.dds"));
+    CHECK(IsUnsafeTextureName(L"1¹.DDS"));
+    CHECK(IsUnsafeTextureName(L"１２~x.dds"));
+    CHECK(!IsUnsafeTextureName(L"123~².dds"));  // after the digits it is just a label
+    CHECK(!IsUnsafeTextureName(L"123.dds"));
+    CHECK(!IsUnsafeTextureName(L"²1.png"));
+    CHECK(!IsUnsafeTextureName(L"hair.dds"));
+
+    CHECK(SafeFolderName("CON") == L"CON_");
+    CHECK(SafeFolderName("con.txt") == L"con_.txt");
+    CHECK(SafeFolderName("LPT\xC2\xB9") == L"LPT¹_");
+    CHECK(SafeFolderName("COM10") == L"COM10");
+    CHECK(SafeFolderName("conin$") == L"conin$_");
+    CHECK(SafeFolderName("CONOUT$.txt") == L"CONOUT$_.txt");
+    CHECK(SafeFolderName("Console") == L"Console");
+
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path base = fs::path(tmp) / L"reresorep_unsafe_test";
+    fs::remove_all(base);
+    fs::create_directories(base / L"modded");
+
+    // Scanning a folder with such a file no longer throws, and skips it.
+    WriteBytes(base / L"modded" / L"²1.dds", Pattern(100, 1));
+    WriteBytes(base / L"modded" / L"5.dds", Pattern(100, 2));
+    TextureIndex index;
+    index.Scan(base / L"modded");
+    CHECK(index.size() == 1 && index.FindExact(5));
+
+    // Import leaves out names older proxies crash on, and Windows device names.
+    const fs::path zipPath = base / L"unsafe.zip";
+    {
+        const auto dds = Pattern(100, 3);
+        ZipWriter w;
+        CHECK(w.Open(zipPath));
+        CHECK(w.AddFile("Mod/\xC2\xB2" "1.dds", dds.data(), dds.size()));
+        CHECK(w.AddFile("Mod/NUL.dds", dds.data(), dds.size()));
+        CHECK(w.AddFile("Mod/CON/7.dds", dds.data(), dds.size()));
+        CHECK(w.AddFile("Mod/123.dds", dds.data(), dds.size()));
+        CHECK(w.Finish());
+    }
+    LabelStore labels;
+    const PackageResult r = ImportModPackage(zipPath, base / L"modded", "Imported", false, labels);
+    CHECK(r.error.empty() && r.textures == 1 && r.skipped == 3);
+    CHECK(fs::exists(base / L"modded/Imported/123.dds"));
+    CHECK(!fs::exists(base / L"modded/Imported" / L"²1.dds"));
+    fs::remove_all(base);
+}
+
+static void TestLegacyZipNames() {
+    namespace fs = std::filesystem;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path zipPath = fs::path(tmp) / L"reresorep_legacy_names.zip";
+    const auto dds = Pattern(100, 4);
+    {
+        ZipWriter w;
+        CHECK(w.Open(zipPath));
+        CHECK(w.AddFile("M\x81" "d/123.dds", dds.data(), dds.size()));  // DOS code page bytes
+        CHECK(w.AddFile("Caf\xC3\xA9/456.dds", dds.data(), dds.size()));  // UTF-8 bytes
+        CHECK(w.Finish());
+    }
+    // Clear the UTF-8 flag everywhere, as Windows' zip folders and older tools write it.
+    std::vector<uint8_t> bytes;
+    {
+        std::ifstream in(zipPath, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    for (size_t i = 0; i + 10 < bytes.size(); ++i) {
+        if (std::memcmp(&bytes[i], "PK\x03\x04", 4) == 0) bytes[i + 7] &= ~0x08;
+        if (std::memcmp(&bytes[i], "PK\x01\x02", 4) == 0) bytes[i + 9] &= ~0x08;
+    }
+    WriteBytes(zipPath, bytes);
+    ZipReader reader;
+    CHECK(reader.Open(zipPath) && reader.entries().size() == 2);
+    if (reader.entries().size() == 2) {
+        CHECK(!(reader.entries()[0].flags & 0x0800));
+        // 0x81 is "ü" in both code page 437 and 850.
+        if (GetOEMCP() == 437 || GetOEMCP() == 850) CHECK(reader.entries()[0].name == "M\xC3\xBC" "d/123.dds");
+        CHECK(reader.entries()[1].name == "Caf\xC3\xA9/456.dds");  // valid UTF-8 is kept
+        std::vector<uint8_t> data;
+        CHECK(reader.Extract(reader.entries()[0], data) && data == dds);
+    }
+    reader = ZipReader();  // closes the file
+    fs::remove(zipPath);
 }
 
 static void TestDdsRoundTrip() {
@@ -518,6 +618,8 @@ int main() {
         {"TestHash", TestHash},
         {"TestContainer", TestContainer},
         {"TestFileNames", TestFileNames},
+        {"TestUnsafeNames", TestUnsafeNames},
+        {"TestLegacyZipNames", TestLegacyZipNames},
         {"TestDdsRoundTrip", TestDdsRoundTrip},
         {"TestDdsArrayAndVolumeHeaders", TestDdsArrayAndVolumeHeaders},
         {"TestCategories", TestCategories},

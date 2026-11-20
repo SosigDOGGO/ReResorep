@@ -713,6 +713,14 @@ void App::Frame() {
         PruneSelection();
         QueueAnalysis();
     }
+    if (library_.unsafeNames() != warnedUnsafe_) {
+        warnedUnsafe_ = library_.unsafeNames();
+        if (!warnedUnsafe_.empty())
+            Status(std::to_string(warnedUnsafe_.size()) + " file(s) have names that make older ReResorep proxies crash "
+                   "the game, such as " + ToUtf8(warnedUnsafe_.front()) +
+                   ". Rename or remove them: a texture name must start with plain digits 0-9.",
+                   "");
+    }
     if (similar_ && !similar_->computed) ComputeSimilar();  // waiting for the source's analysis
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();

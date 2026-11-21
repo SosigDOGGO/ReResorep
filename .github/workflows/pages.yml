@@ -17,17 +17,29 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+# Artifacts belong to the whole run, not to one attempt, so a re-run would find the earlier
+# attempt's "github-pages" artifact too and deploy-pages refuses to pick between them. Naming the
+# artifact per attempt keeps re-runs working. Uploading in its own job (the layout GitHub's
+# starter workflow uses) also gives the artifact time to show up before deploy looks for it.
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/site
+          name: github-pages-${{ github.run_attempt }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}

@@ -2243,7 +2243,7 @@ void App::DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* i
         DrawMoveMenu({&file}, false);
         DrawMoveMenu({&file}, true);
         const bool encrypted = info && info->encrypted;
-        if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenWithShell(file.path);
+        if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenOneInEditor(file.path);
         if (encrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
         if (ImGui::MenuItem("Tint...", nullptr, false, !encrypted && !tintJob_.valid())) OpenTint({&file});
         ImGui::SetItemTooltip(encrypted ? "Encrypted (resorep1) textures can't be tinted."
@@ -2251,7 +2251,7 @@ void App::DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* i
     } else {
         if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
         DrawAddToModMenu({&file});
-        if (ImGui::MenuItem("Open in editor")) OpenWithShell(file.path);
+        if (ImGui::MenuItem("Open in editor")) OpenOneInEditor(file.path);
     }
     if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);
     const bool encryptedFile = info && info->encrypted;
@@ -2318,6 +2318,11 @@ void App::OpenInEditor(const std::vector<const TextureFile*>& files) {
         return;
     }
     StartOpening(std::move(paths), skipped);
+}
+
+void App::OpenOneInEditor(const fs::path& path) {
+    if (!OpenWithShell(path))
+        Status(ToUtf8(path.filename()) + " could not be opened. Is a program set up to open .dds files?", "");
 }
 
 void App::StartOpening(std::vector<fs::path> paths, size_t skipped) {
@@ -2530,7 +2535,7 @@ void App::DrawDetails() {
         ImGui::SameLine();
         const bool encrypted = info && info->encrypted;
         ImGui::BeginDisabled(encrypted);
-        if (ImGui::Button("Open in editor", ImVec2(-1, 0))) OpenWithShell(file->path);
+        if (ImGui::Button("Open in editor", ImVec2(-1, 0))) OpenOneInEditor(file->path);
         ImGui::EndDisabled();
         ImGui::SetItemTooltip(encrypted ? "Encrypted (resorep1) textures can't be opened by image editors."
                                         : "Opens the .dds in your default editor. Save it there; the preview and a "
@@ -2572,7 +2577,7 @@ void App::DrawDetails() {
             DrawAddToModItems({file});
             ImGui::EndPopup();
         }
-        if (ImGui::Button("Open in editor", ImVec2(width * 0.5f - 4, 0))) OpenWithShell(file->path);
+        if (ImGui::Button("Open in editor", ImVec2(width * 0.5f - 4, 0))) OpenOneInEditor(file->path);
         ImGui::SameLine();
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
 

@@ -85,6 +85,7 @@ private:
     // that is more than kConfirmOpenCount files. The files are handed to the shell off the UI thread.
     void OpenInEditor(const std::vector<const TextureFile*>& files);
     void StartOpening(std::vector<std::filesystem::path> paths, size_t skipped);
+    void OpenOneInEditor(const std::filesystem::path& path);  // one texture, on the UI thread; reports a failure
     void DrawOpenInEditorPopup();
     // Shows this texture on its own tab (Mods: All textures), selected.
     void GoTo(const std::filesystem::path& path, bool isMod);

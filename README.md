@@ -277,9 +277,21 @@ The zip's own checksum is written to `…-win64.zip.sha256.txt` for the release 
 files are copied, so your own settings, caches, dumps and mods in `build/bin` never end up in a
 release. Packaging a Debug build is refused.
 
+To publish from GitHub instead, follow these steps:
+
+1. Raise the version and add the release notes in `docs/releases/<version>.md`.
+2. Merge both to `main`.
+3. Run the **Release** workflow (Actions → Release → Run workflow).
+
+The workflow builds and tests on Windows, then runs `ship`. For the pinned proxy, it first puts
+the latest release's package in `build/ship`, and `ship` checks the proxy's SHA-256. It then
+publishes `v<version>` with the zip and its checksum. The release starts as a draft until both
+files are attached, because the in-app updater skips drafts. Running the workflow again replaces a
+draft left by a failed run (or by a run with *draft* ticked), but never a published release.
+
 ## Version and credits
 
-The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.5.6)`). From there it goes
+The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.5.7)`). From there it goes
 into the window title, the **About** tab and the version info of `ReResorep.exe`.
 
 The proxy has its own version, `RERESOREP_PROXY_VERSION` in `CMakeLists.txt`. It goes into the

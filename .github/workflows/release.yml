@@ -1,0 +1,115 @@
+# Builds, tests and publishes a release from main. Run it by hand (Actions -> Release -> Run
+# workflow) after the version bump is merged: it releases the version in CMakeLists.txt as
+# v<version>, with the notes in docs/releases/<version>.md.
+#
+# The ship target packages the released proxy pinned in packaging/proxy.sha256 while
+# RERESOREP_PROXY_VERSION matches it. This runner's compiler may build a different proxy file,
+# so the latest release's package is put in build/ship first: ship takes the pinned file from
+# there after checking its SHA-256, and stops if it isn't there.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: "Leave the release as a draft (the in-app updater ignores drafts)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write  # create the tag and the release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          Write-Error "Run the release from main, not $env:GITHUB_REF."
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - name: Version and notes
+        id: version
+        run: |
+          $m = Select-String -Path CMakeLists.txt -Pattern 'project\(ReResorep .*VERSION ([0-9]+\.[0-9]+\.[0-9]+)\)'
+          if (-not $m) { Write-Error "No project(... VERSION x.y.z) in CMakeLists.txt"; exit 1 }
+          $version = $m.Matches[0].Groups[1].Value
+          $notes = "docs/releases/$version.md"
+          if (-not (Test-Path $notes)) { Write-Error "Write the release notes in $notes first."; exit 1 }
+          # A draft left by a failed or draft-only run is replaced. A draft has no tag yet, so deleting
+          # it leaves the repository's tags alone; a published release is never touched.
+          $draft = gh release view "v$version" --json isDraft --jq .isDraft 2> $null
+          if ($LASTEXITCODE -eq 0) {
+            if ($draft -ne "true") { Write-Error "Release v$version is already published."; exit 1 }
+            "Deleting the draft v$version left by an earlier run"
+            gh release delete "v$version" --yes
+            if ($LASTEXITCODE -ne 0) { Write-Error "Could not delete the draft v$version."; exit 1 }
+          }
+          git ls-remote --exit-code --tags origin "refs/tags/v$version" *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Error "Tag v$version already exists."; exit 1 }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "notes=$notes" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Previous package (for the pinned proxy)
+        run: |
+          New-Item -ItemType Directory -Force build/previous | Out-Null
+          gh release download --pattern "ReResorep-*-win64.zip" --dir build/previous
+          if ($LASTEXITCODE -ne 0) { Write-Error "Could not download the latest release's zip."; exit 1 }
+          Get-ChildItem build/previous -Filter *.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath build/ship -Force }
+          Get-ChildItem build/ship -Recurse -Filter d3d11.dll | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.FullName)" }
+
+      - name: Package
+        run: cmake --build build --config Release --target ship
+
+      - name: Check the package
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zip = "build/ship/ReResorep-$version-win64.zip"
+          if (-not (Test-Path $zip) -or -not (Test-Path "$zip.sha256.txt")) { Write-Error "ship made no $zip"; exit 1 }
+          # While the proxy version is the pinned one, the package must hold exactly that file.
+          $pin = (Get-Content packaging/proxy.sha256 -TotalCount 1).Trim() -split ' '
+          $proxyVersion = (Select-String -Path CMakeLists.txt -Pattern 'set\(RERESOREP_PROXY_VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          $shipped = (Get-FileHash "build/ship/ReResorep-$version/proxy/d3d11.dll" -Algorithm SHA256).Hash.ToLower()
+          "Proxy $proxyVersion, SHA-256 $shipped"
+          if ($pin[0] -eq $proxyVersion -and $shipped -ne $pin[1]) {
+            Write-Error "The packaged proxy is not the released $($pin[0]) file ($($pin[1]))."
+            exit 1
+          }
+          exit 0
+
+      - name: Publish
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zip = "build/ship/ReResorep-$version-win64.zip"
+          $hash = ((Get-Content "$zip.sha256.txt" -TotalCount 1) -split ' ')[0]
+          $notes = Join-Path $env:RUNNER_TEMP notes.md
+          (Get-Content "${{ steps.version.outputs.notes }}" -Raw).TrimEnd() + "`n`nSHA-256 (zip): ``$hash```n" |
+            Set-Content $notes -NoNewline -Encoding utf8NoBOM
+          # A draft first, published once both files are attached: the updater must never see a
+          # release without its zip and checksum.
+          gh release create "v$version" $zip "$zip.sha256.txt" --draft --target $env:GITHUB_SHA `
+            --title "ReResorep $version" --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ("${{ inputs.draft }}" -ne "true") {
+            gh release edit "v$version" --draft=false --latest
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          exit 0

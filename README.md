@@ -39,6 +39,11 @@ Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds
 
 - **Sort** by hash, name, date modified, file size, resolution, format or mod/category, in
   either direction.
+- **Select several:** Ctrl+click adds or removes one texture at a time, Shift+click selects a
+  range, dragging draws a selection box, and Ctrl+A selects everything shown. Right-click one of
+  them, or use the details panel, to act on all of them. That includes *Open in editor*, which
+  opens each one in your default `.dds` editor. It skips encrypted `resorep1` textures and asks
+  first before opening more than 10.
 - **Rotate / Mirror** previews. The default is 180°, which matches how dumped textures look
   in-game. This only changes the display; files are never altered.
 - **Labels:** give any hash your own name in the details panel. Labels are kept in

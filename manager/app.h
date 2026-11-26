@@ -80,6 +80,18 @@ private:
     void HandleGridMiddleClick(float selectedY, float rowHeight);
     void DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* info);  // right-click on one
     void DrawSelectionMenu(bool isMod);  // right-click on one of several selected
+    // Opens each of `files` in the default .dds program, skipping encrypted ones; asks first when
+    // that is more than kConfirmOpenCount files.
+    void OpenInEditor(const std::vector<const TextureFile*>& files);
+    void OpenPaths(const std::vector<std::filesystem::path>& paths, size_t skipped);
+    void DrawOpenInEditorPopup();
+    // Encrypted (resorep1) textures, remembered per file version. IsEncrypted reads the header when
+    // it isn't known yet; KnownAllEncrypted only looks at what is known (cards note it as they load).
+    bool IsEncrypted(const TextureFile& file);
+    void NoteEncrypted(const TextureFile& file, bool encrypted);
+    bool KnownAllEncrypted(const std::vector<const TextureFile*>& files) const;
+    // Shows this texture on its own tab (Mods: All textures), selected.
+    void GoTo(const std::filesystem::path& path, bool isMod);
     void DrawDetails();
     void DrawSelectionDetails(const std::vector<const TextureFile*>& files);  // when several are selected
     void DrawGames();
@@ -92,6 +104,7 @@ private:
     void Redump();
     void DrawSimilarWindow();
     void DrawLabelEditor(const TextureFile& file, float width);
+    void FlushLabelEdit();  // saves an edit in the details panel's label box that was not saved yet
     void DrawLabelPopup();
 
     // Labels and similarity search.
@@ -207,7 +220,8 @@ private:
     std::unique_ptr<TextureAnalyzer> analyzer_;
     std::optional<SimilarSearch> similar_;
     char labelEdit_[128] = {};
-    std::optional<uint32_t> labelEditHash_;
+    std::optional<uint32_t> labelEditHash_;  // the hash labelEdit_ belongs to
+    bool labelEditDirty_ = false;            // labelEdit_ was typed in and not saved yet
     // Right-click > Edit label: a small dialog for that hash.
     uint32_t labelDialogHash_ = 0;
     char labelDialog_[128] = {};
@@ -247,7 +261,11 @@ private:
     std::optional<Selection> selection_;
     std::unordered_set<std::wstring> picked_;  // paths (native strings) of the selected textures
     char filter_[64] = {};          // the search field in the tab row; applies to Mods and Dumps
+    std::string filterLower_;       // filter_ lowercased (ASCII), worked out when it changes
+    std::wstring filterLowerWide_;  // the same, for matching mod/category folder names
     std::optional<Tab> selectTab_;  // switch to this tab on the next frame
+    // Selected once its tab is showing: a tab switch takes a frame or two and clears the selection.
+    std::optional<Selection> selectAfterTab_;
     bool showDisabled_ = true;
     bool hideModdedDumps_ = false;
     float thumbSize_ = 128.0f;
@@ -272,6 +290,18 @@ private:
     bool openRenameFolderPopup_ = false;
     std::vector<PendingImport> pendingImports_;
     bool openImportPopup_ = false;
+    static constexpr size_t kConfirmOpenCount = 10;  // opening more than this many asks first
+    struct OpenRequest {
+        std::vector<std::filesystem::path> paths;
+        size_t skipped = 0;  // encrypted ones left out
+    };
+    std::optional<OpenRequest> openRequest_;
+    bool openOpenPopup_ = false;
+    struct EncryptedEntry {
+        int64_t modified;
+        bool encrypted;
+    };
+    std::unordered_map<std::wstring, EncryptedEntry> encryptedCache_;  // by path
     std::vector<std::function<void()>> deferred_;
 
     std::string statusText_;

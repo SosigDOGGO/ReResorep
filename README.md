@@ -286,7 +286,8 @@ To publish from GitHub instead, follow these steps:
 The workflow builds and tests on Windows, then runs `ship`. For the pinned proxy, it first puts
 the latest release's package in `build/ship`, and `ship` checks the proxy's SHA-256. It then
 publishes `v<version>` with the zip and its checksum. The release starts as a draft until both
-files are attached, because the in-app updater skips drafts.
+files are attached, because the in-app updater skips drafts. Running the workflow again replaces a
+draft left by a failed run (or by a run with *draft* ticked), but never a published release.
 
 ## Version and credits
 

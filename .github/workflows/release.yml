@@ -46,8 +46,15 @@ jobs:
           $version = $m.Matches[0].Groups[1].Value
           $notes = "docs/releases/$version.md"
           if (-not (Test-Path $notes)) { Write-Error "Write the release notes in $notes first."; exit 1 }
-          gh release view "v$version" *> $null
-          if ($LASTEXITCODE -eq 0) { Write-Error "Release v$version already exists."; exit 1 }
+          # A draft left by a failed or draft-only run is replaced. A draft has no tag yet, so deleting
+          # it leaves the repository's tags alone; a published release is never touched.
+          $draft = gh release view "v$version" --json isDraft --jq .isDraft 2> $null
+          if ($LASTEXITCODE -eq 0) {
+            if ($draft -ne "true") { Write-Error "Release v$version is already published."; exit 1 }
+            "Deleting the draft v$version left by an earlier run"
+            gh release delete "v$version" --yes
+            if ($LASTEXITCODE -ne 0) { Write-Error "Could not delete the draft v$version."; exit 1 }
+          }
           git ls-remote --exit-code --tags origin "refs/tags/v$version" *> $null
           if ($LASTEXITCODE -eq 0) { Write-Error "Tag v$version already exists."; exit 1 }
           "version=$version" >> $env:GITHUB_OUTPUT

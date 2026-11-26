@@ -284,10 +284,13 @@ To publish from GitHub instead, follow these steps:
 3. Run the **Release** workflow (Actions → Release → Run workflow).
 
 The workflow builds and tests on Windows, then runs `ship`. For the pinned proxy, it first puts
-the latest release's package in `build/ship`, and `ship` checks the proxy's SHA-256. It then
+the package of the newest release that has that file in `build/ship`, and `ship` checks the
+proxy's SHA-256. It then
 publishes `v<version>` with the zip and its checksum. The release starts as a draft until both
 files are attached, because the in-app updater skips drafts. Running the workflow again replaces a
 draft left by a failed run (or by a run with *draft* ticked), but never a published release.
+Tick *dry run* to build, test and package from any branch without publishing or deleting
+anything, for example to try a change to the workflow.
 
 ## Version and credits
 

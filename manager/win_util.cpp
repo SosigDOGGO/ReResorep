@@ -108,6 +108,15 @@ bool OpenWithShell(const fs::path& path) {
     return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
 }
 
+bool OpenWithShellAndWait(const fs::path& path) {
+    SHELLEXECUTEINFOW info{sizeof(info)};
+    info.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    info.lpVerb = L"open";
+    info.lpFile = path.c_str();
+    info.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&info) != FALSE;
+}
+
 std::string LaunchProgram(const fs::path& exe) {
     std::error_code ec;
     if (!fs::exists(exe, ec)) return "Game executable not found";

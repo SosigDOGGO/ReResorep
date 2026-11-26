@@ -28,6 +28,7 @@ struct TextureFile {
     // From the DDS header (0 / UNKNOWN if it could not be read).
     uint32_t width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    bool encrypted = false;  // a resorep1 pack, which image editors can't open
     // Mods only.
     std::string game;         // exe SHA-256 its mod is marked for, "" = any game
     bool unused = false;      // on, but another texture with the same hash wins in every build that loads it
@@ -121,6 +122,7 @@ private:
         uint64_t size;
         uint32_t width, height;
         DXGI_FORMAT format;
+        bool encrypted;
     };
     std::unordered_map<std::wstring, CachedInfo> infoCache_;
     bool infoCacheLoaded_ = false;

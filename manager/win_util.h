@@ -26,6 +26,9 @@ void ShowInExplorer(const std::filesystem::path& path);
 // Opens a file, folder or URL with its default program. False when Windows could not (for
 // example, no program is set up for that file type).
 bool OpenWithShell(const std::filesystem::path& path);
+// The same for a worker thread: returns once the shell has handed the file over, so the thread
+// may end right after, and shows no error dialogs. Needs COM initialised on that thread.
+bool OpenWithShellAndWait(const std::filesystem::path& path);
 // Starts a program with its own folder as working directory. Returns an error message or "".
 std::string LaunchProgram(const std::filesystem::path& exe);
 

@@ -20,7 +20,7 @@ namespace resorep::ui {
 namespace fs = std::filesystem;
 
 namespace {
-constexpr char kInfoCacheMagic[4] = {'R', 'R', 'T', '1'};  // bump when CachedInfo changes
+constexpr char kInfoCacheMagic[4] = {'R', 'R', 'T', '2'};  // bump when CachedInfo changes (2: encrypted)
 
 fs::path InfoCacheFile() { return ExeDirectory() / L"texture_info.cache"; }
 
@@ -57,14 +57,17 @@ void Library::LoadInfoCache() {
         std::wstring path(len, L'\0');
         CachedInfo c{};
         uint32_t format = 0;
+        uint8_t encrypted = 0;
         in.read(reinterpret_cast<char*>(path.data()), std::streamsize(len) * 2);
         in.read(reinterpret_cast<char*>(&c.modified), 8);
         in.read(reinterpret_cast<char*>(&c.size), 8);
         in.read(reinterpret_cast<char*>(&c.width), 4);
         in.read(reinterpret_cast<char*>(&c.height), 4);
         in.read(reinterpret_cast<char*>(&format), 4);
+        in.read(reinterpret_cast<char*>(&encrypted), 1);
         if (!in) break;
         c.format = DXGI_FORMAT(format);
+        c.encrypted = encrypted != 0;
         infoCache_[path] = c;
     }
 }
@@ -87,6 +90,7 @@ void Library::SaveInfoCache() {
         if (!scanned.count(path) && (under(path, modded_) || under(path, original_))) continue;
         const uint16_t len = uint16_t(path.size());
         const uint32_t format = uint32_t(c.format);
+        const uint8_t encrypted = c.encrypted ? 1 : 0;
         put(&len, 2);
         put(path.data(), path.size() * 2);
         put(&c.modified, 8);
@@ -94,6 +98,7 @@ void Library::SaveInfoCache() {
         put(&c.width, 4);
         put(&c.height, 4);
         put(&format, 4);
+        put(&encrypted, 1);
     }
     infoUnsaved_ = 0;
     const fs::path file = InfoCacheFile();
@@ -122,13 +127,16 @@ TextureFile Library::MakeFile(const fs::directory_entry& e, uint32_t hash) {
     CachedInfo& c = it->second;
     if (inserted || c.modified != f.modified || c.size != f.size) {
         DdsImage header;
-        const bool ok = ReadTextureInfo(f.path.wstring(), header);
-        c = {f.modified, f.size, ok ? header.width : 0, ok ? header.height : 0, ok ? header.format : DXGI_FORMAT_UNKNOWN};
+        bool encrypted = false;
+        const bool ok = ReadTextureInfo(f.path.wstring(), header, &encrypted);
+        c = {f.modified, f.size, ok ? header.width : 0, ok ? header.height : 0, ok ? header.format : DXGI_FORMAT_UNKNOWN,
+             encrypted};
         ++infoUnsaved_;
     }
     f.width = c.width;
     f.height = c.height;
     f.format = c.format;
+    f.encrypted = c.encrypted;
     return f;
 }
 

@@ -4,8 +4,11 @@
 #
 # The ship target packages the released proxy pinned in packaging/proxy.sha256 while
 # RERESOREP_PROXY_VERSION matches it. This runner's compiler may build a different proxy file,
-# so the latest release's package is put in build/ship first: ship takes the pinned file from
-# there after checking its SHA-256, and stops if it isn't there.
+# so the package of the newest release that has the pinned file is put in build/ship first:
+# ship takes the file from there after checking its SHA-256, and stops if it isn't there.
+#
+# "Dry run" builds, tests and packages without publishing or deleting anything, from any
+# branch, to try changes to this workflow.
 name: Release
 
 on:
@@ -13,6 +16,10 @@ on:
     inputs:
       draft:
         description: "Leave the release as a draft (the in-app updater ignores drafts)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry run: build and package only, publish nothing (works from any branch)"
         type: boolean
         default: false
 
@@ -31,7 +38,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Only from main
-        if: github.ref != 'refs/heads/main'
+        if: github.ref != 'refs/heads/main' && !inputs.dry_run
         run: |
           Write-Error "Run the release from main, not $env:GITHUB_REF."
           exit 1
@@ -46,17 +53,23 @@ jobs:
           $version = $m.Matches[0].Groups[1].Value
           $notes = "docs/releases/$version.md"
           if (-not (Test-Path $notes)) { Write-Error "Write the release notes in $notes first."; exit 1 }
+          $dryRun = "${{ inputs.dry_run }}" -eq "true"
           # A draft left by a failed or draft-only run is replaced. A draft has no tag yet, so deleting
           # it leaves the repository's tags alone; a published release is never touched.
           $draft = gh release view "v$version" --json isDraft --jq .isDraft 2> $null
           if ($LASTEXITCODE -eq 0) {
-            if ($draft -ne "true") { Write-Error "Release v$version is already published."; exit 1 }
-            "Deleting the draft v$version left by an earlier run"
-            gh release delete "v$version" --yes
-            if ($LASTEXITCODE -ne 0) { Write-Error "Could not delete the draft v$version."; exit 1 }
+            if ($dryRun) {
+              "Dry run: v$version already exists (draft: $draft); it is left as it is."
+            } elseif ($draft -ne "true") {
+              Write-Error "Release v$version is already published."; exit 1
+            } else {
+              "Deleting the draft v$version left by an earlier run"
+              gh release delete "v$version" --yes
+              if ($LASTEXITCODE -ne 0) { Write-Error "Could not delete the draft v$version."; exit 1 }
+            }
           }
           git ls-remote --exit-code --tags origin "refs/tags/v$version" *> $null
-          if ($LASTEXITCODE -eq 0) { Write-Error "Tag v$version already exists."; exit 1 }
+          if ($LASTEXITCODE -eq 0 -and -not $dryRun) { Write-Error "Tag v$version already exists."; exit 1 }
           "version=$version" >> $env:GITHUB_OUTPUT
           "notes=$notes" >> $env:GITHUB_OUTPUT
           exit 0
@@ -68,13 +81,37 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Previous package (for the pinned proxy)
+      - name: Released proxy
         run: |
-          New-Item -ItemType Directory -Force build/previous | Out-Null
-          gh release download --pattern "ReResorep-*-win64.zip" --dir build/previous
-          if ($LASTEXITCODE -ne 0) { Write-Error "Could not download the latest release's zip."; exit 1 }
-          Get-ChildItem build/previous -Filter *.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath build/ship -Force }
-          Get-ChildItem build/ship -Recurse -Filter d3d11.dll | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.FullName)" }
+          $pin = (Get-Content packaging/proxy.sha256 -TotalCount 1).Trim() -split ' '
+          $proxyVersion = (Select-String -Path CMakeLists.txt -Pattern 'set\(RERESOREP_PROXY_VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          if ($pin[0] -ne $proxyVersion) {
+            "Proxy $proxyVersion is new (packaging/proxy.sha256 pins $($pin[0])): this build's proxy ships."
+            exit 0
+          }
+          # The newest release that shipped the pinned file. That is usually the latest one, but not
+          # when a newer release already has a new proxy and proxy.sha256 wasn't updated yet.
+          $tags = gh release list --limit 30 --exclude-drafts --json tagName --jq '.[].tagName'
+          if ($LASTEXITCODE -ne 0) { Write-Error "Could not list the releases."; exit 1 }
+          foreach ($tag in $tags) {
+            $dir = "build/previous/$tag"
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            gh release download $tag --pattern "ReResorep-*-win64.zip" --dir $dir
+            if ($LASTEXITCODE -ne 0) { "$tag has no package"; continue }
+            $zip = Get-ChildItem $dir -Filter *.zip | Select-Object -First 1
+            Expand-Archive $zip.FullName -DestinationPath "$dir/unpacked" -Force
+            $dll = Get-ChildItem "$dir/unpacked" -Recurse -Filter d3d11.dll | Select-Object -First 1
+            $hash = if ($dll) { (Get-FileHash $dll.FullName -Algorithm SHA256).Hash.ToLower() } else { "" }
+            "$tag ships proxy $hash"
+            if ($hash -eq $pin[1]) {
+              # ship looks for build/ship/ReResorep-*/proxy/d3d11.dll.
+              Expand-Archive $zip.FullName -DestinationPath build/ship -Force
+              "Using the released proxy $($pin[0]) from $tag"
+              exit 0
+            }
+          }
+          Write-Error "None of the last 30 releases ships the pinned proxy $($pin[0]) ($($pin[1]))."
+          exit 1
 
       - name: Package
         run: cmake --build build --config Release --target ship
@@ -96,6 +133,7 @@ jobs:
           exit 0
 
       - name: Publish
+        if: ${{ !inputs.dry_run }}
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $zip = "build/ship/ReResorep-$version-win64.zip"

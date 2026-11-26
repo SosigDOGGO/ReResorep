@@ -131,6 +131,11 @@ bool Exists(const fs::path& path) {
     return fs::exists(path, ec);
 }
 
+// Whether none of these can go to an image editor (all resorep1 packs).
+bool AllEncrypted(const std::vector<const TextureFile*>& files) {
+    return !files.empty() && std::all_of(files.begin(), files.end(), [](const TextureFile* f) { return f->encrypted; });
+}
+
 // Deferred actions keep their own copies: the library is rescanned before they run.
 std::vector<TextureFile> Copies(const std::vector<const TextureFile*>& files) {
     std::vector<TextureFile> copies;
@@ -172,6 +177,8 @@ App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), device_(device), thumbs
     RefreshGames();
     ApplyProfile();
 }
+
+App::~App() { FlushLabelEdit(); }
 
 const GameState* App::ProfileGame() const {
     if (settings_.profile.empty()) return nullptr;
@@ -761,18 +768,21 @@ void App::Frame() {
         const std::optional<Tab> select = std::exchange(selectTab_, std::nullopt);
         auto tab = [&](const char* name, Tab t) {
             if (ImGui::BeginTabItem(name, nullptr, select == t ? ImGuiTabItemFlags_SetSelected : 0)) {
-                const std::optional<Tab> waiting =
-                    selectAfterTab_ ? std::optional(selectAfterTab_->isMod ? Tab::Mods : Tab::Dumps) : std::nullopt;
                 if (tab_ != t) {
                     FlushLabelEdit();
                     ClearSelection();
-                    if (waiting && *waiting != t) selectAfterTab_.reset();  // went somewhere else instead
                 }
                 tab_ = t;
-                // GoTo's texture, now that its tab is the one showing.
-                if (selectAfterTab_ && waiting == t) {
-                    Select(selectAfterTab_->path, selectAfterTab_->isMod);
-                    selectAfterTab_.reset();
+                // GoTo's texture, once its tab is the one showing. The tab bar may show another tab
+                // for a frame on the way (an earlier GoTo's switch), so that alone doesn't drop it.
+                if (selectAfterTab_) {
+                    const Selection& want = selectAfterTab_->selection;
+                    if ((want.isMod ? Tab::Mods : Tab::Dumps) == t) {
+                        Select(want.path, want.isMod);
+                        selectAfterTab_.reset();
+                    } else if (ImGui::GetFrameCount() > selectAfterTab_->until) {
+                        selectAfterTab_.reset();  // its tab never came: the user went somewhere else
+                    }
                 }
                 ImGui::EndTabItem();
             }
@@ -869,6 +879,18 @@ void App::Frame() {
                                      : name + " was not running.";
         Status(r.error, msg);
         lastRunningCheck_ = {};
+    }
+
+    if (openJob_.valid() && openJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        const OpenResult r = openJob_.get();
+        const std::string note = r.skipped ? " " + std::to_string(r.skipped) + " encrypted (resorep1) " +
+                                                 (r.skipped == 1 ? "texture was" : "textures were") + " skipped."
+                                           : std::string();
+        const size_t total = r.opened + r.failed;
+        Status(r.failed ? std::to_string(r.failed) + " of " + std::to_string(total) +
+                              " could not be opened. Is a program set up to open .dds files?" + note
+                        : "",
+               "Opened " + std::to_string(r.opened) + (r.opened == 1 ? " texture" : " textures") + " in your editor." + note);
     }
 
     if (deleteDumpsJob_.valid() &&
@@ -2144,7 +2166,6 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
 
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file.path, file.modified, uint32_t(size), &info);
-    if (info) NoteEncrypted(file, info->encrypted);  // free here, and lets the selection menu know
     if (srv && info) {
         DrawPreview(dl, srv, info->width, info->height, ImVec2(pos.x + 4, pos.y + 4), ImVec2(size - 8, size - 8),
                     (isMod && !file.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
@@ -2268,68 +2289,49 @@ void App::DrawSelectionMenu(bool isMod) {
     } else {
         DrawAddToModMenu(files);
     }
-    const bool allEncrypted = KnownAllEncrypted(files);
-    if (ImGui::MenuItem("Open in editor", nullptr, false, !allEncrypted)) OpenInEditor(files);
+    const bool allEncrypted = AllEncrypted(files);
+    if (ImGui::MenuItem("Open in editor", nullptr, false, !allEncrypted && !openJob_.valid())) OpenInEditor(files);
     if (allEncrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
     else ImGui::SetItemTooltip("Opens each one in your default .dds editor. Encrypted (resorep1) ones are skipped.");
     ImGui::Separator();
     if (ImGui::MenuItem("Move to Recycle Bin", "Del")) Defer([this, c = Copies(files)] { Recycle(c); });
 }
 
-bool App::IsEncrypted(const TextureFile& file) {
-    if (auto it = encryptedCache_.find(file.path.native()); it != encryptedCache_.end() && it->second.modified == file.modified)
-        return it->second.encrypted;
-    DdsImage header;
-    bool encrypted = false;
-    ReadTextureInfo(file.path.wstring(), header, &encrypted);
-    NoteEncrypted(file, encrypted);
-    return encrypted;
-}
-
-void App::NoteEncrypted(const TextureFile& file, bool encrypted) {
-    encryptedCache_.insert_or_assign(file.path.native(), EncryptedEntry{file.modified, encrypted});
-}
-
-bool App::KnownAllEncrypted(const std::vector<const TextureFile*>& files) const {
-    if (files.empty()) return false;
-    return std::all_of(files.begin(), files.end(), [&](const TextureFile* f) {
-        const auto it = encryptedCache_.find(f->path.native());
-        return it != encryptedCache_.end() && it->second.modified == f->modified && it->second.encrypted;
-    });
-}
-
 void App::OpenInEditor(const std::vector<const TextureFile*>& files) {
-    OpenRequest r;
+    if (openJob_.valid()) return;  // still handing the last ones over (the buttons are disabled meanwhile)
+    // The library scan already knows which ones are encrypted: nothing is read here.
+    std::vector<fs::path> paths;
+    size_t skipped = 0;
     for (const TextureFile* f : files) {
-        if (IsEncrypted(*f)) ++r.skipped;
-        else r.paths.push_back(f->path);
+        if (f->encrypted) ++skipped;
+        else paths.push_back(f->path);
     }
-    if (r.paths.empty()) {
-        Status(r.skipped > 1 ? "These are all encrypted (resorep1) textures, which image editors can't open."
-                             : "Encrypted (resorep1) textures can't be opened by image editors.",
+    if (paths.empty()) {
+        Status(skipped > 1 ? "These are all encrypted (resorep1) textures, which image editors can't open."
+                           : "Encrypted (resorep1) textures can't be opened by image editors.",
                "");
         return;
     }
-    if (r.paths.size() > kConfirmOpenCount) {  // each one is a window or tab in the editor
-        openRequest_ = std::move(r);
+    if (paths.size() > kConfirmOpenCount) {  // each one is a window or tab in the editor
+        openRequest_ = OpenRequest{std::move(paths), skipped};
         openOpenPopup_ = true;
         return;
     }
-    OpenPaths(r.paths, r.skipped);
+    StartOpening(std::move(paths), skipped);
 }
 
-void App::OpenPaths(const std::vector<fs::path>& paths, size_t skipped) {
-    size_t failed = 0;
-    for (const fs::path& p : paths) failed += !OpenWithShell(p);
-    const size_t opened = paths.size() - failed;
-    const std::string note = skipped ? " " + std::to_string(skipped) + " encrypted (resorep1) " +
-                                           (skipped == 1 ? "texture was" : "textures were") + " skipped."
-                                     : std::string();
-    const std::string error =
-        failed ? std::to_string(failed) + " of " + std::to_string(paths.size()) +
-                     " could not be opened. Is a program set up to open .dds files?" + note
-               : std::string();
-    Status(error, "Opened " + std::to_string(opened) + (opened == 1 ? " texture" : " textures") + " in your editor." + note);
+void App::StartOpening(std::vector<fs::path> paths, size_t skipped) {
+    // Off the UI thread: the shell can take a while per file, and there may be hundreds.
+    Status("", "Opening " + std::to_string(paths.size()) + (paths.size() == 1 ? " texture" : " textures") +
+                   " in your editor...");
+    openJob_ = std::async(std::launch::async, [paths = std::move(paths), skipped] {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        OpenResult r;
+        r.skipped = skipped;
+        for (const fs::path& p : paths) ++(OpenWithShellAndWait(p) ? r.opened : r.failed);
+        if (SUCCEEDED(com)) CoUninitialize();
+        return r;
+    });
 }
 
 void App::DrawOpenInEditorPopup() {
@@ -2346,7 +2348,7 @@ void App::DrawOpenInEditorPopup() {
     ImGui::Spacing();
     bool close = false;
     if (ImGui::Button("Open", ImVec2(120, 0))) {
-        OpenPaths(openRequest_->paths, openRequest_->skipped);
+        StartOpening(std::move(openRequest_->paths), openRequest_->skipped);
         close = true;
     }
     ImGui::SameLine();
@@ -2359,14 +2361,17 @@ void App::DrawOpenInEditorPopup() {
 void App::GoTo(const fs::path& path, bool isMod) {
     const Tab tab = isMod ? Tab::Mods : Tab::Dumps;
     if (isMod) modView_ = ModView::All;  // so the sidebar doesn't hide it
-    if (tab_ == tab) {
+    // Already there, and no switch on its way: select right away.
+    if (tab_ == tab && !selectTab_ && !selectAfterTab_) {
         Select(path, isMod);
         return;
     }
     // Writing tab_ would be undone by the tab bar, which still has the old tab open, and the tab
-    // change clears the selection: switch through the tab bar and select once it has.
+    // change clears the selection: switch through the tab bar and select once it has. Asking for
+    // the tab again also overrides an earlier GoTo's switch that is still on its way, and this
+    // replaces its pending selection, so the latest GoTo wins.
     selectTab_ = tab;
-    selectAfterTab_ = Selection{path, isMod};
+    selectAfterTab_ = PendingSelect{Selection{path, isMod}, ImGui::GetFrameCount() + 30};
 }
 
 void App::DrawDetails() {
@@ -2398,7 +2403,6 @@ void App::DrawDetails() {
     PreviewTweak& tweak = previewTweaks_[file->hash];
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, file->modified, 0, &info);
-    if (info) NoteEncrypted(*file, info->encrypted);
     if (srv && info) {
         // The view is always the whole width x box area, so a tall or wide texture can use
         // all of it once zoomed in; at 100% fit it sits in the middle.
@@ -2614,8 +2618,8 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
 
     const ImVec2 half(width * 0.5f - 4, 0);
     auto openButton = [&](ImVec2 size) {
-        const bool allEncrypted = KnownAllEncrypted(files);
-        ImGui::BeginDisabled(allEncrypted);
+        const bool allEncrypted = AllEncrypted(files);
+        ImGui::BeginDisabled(allEncrypted || openJob_.valid());
         if (ImGui::Button("Open in editor", size)) OpenInEditor(files);
         ImGui::EndDisabled();
         ImGui::SetItemTooltip(allEncrypted ? "Encrypted (resorep1) textures can't be opened by image editors."
@@ -2683,9 +2687,7 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
         dl->AddRectFilled(at, ImVec2(at.x + box, at.y + box), IM_COL32(28, 28, 32, 255), 3.0f);
         const TextureInfo* info = nullptr;
         // Same size as the grid's, so these come from the thumbnails it already made.
-        ID3D11ShaderResourceView* srv = thumbs_.Get(f.path, f.modified, uint32_t(thumbSize_), &info);
-        if (info) NoteEncrypted(f, info->encrypted);
-        if (srv && info)
+        if (ID3D11ShaderResourceView* srv = thumbs_.Get(f.path, f.modified, uint32_t(thumbSize_), &info); srv && info)
             DrawPreview(dl, srv, info->width, info->height, ImVec2(at.x + 2, at.y + 2), ImVec2(box - 4, box - 4),
                         (isMod && !f.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
         if (ImGui::IsItemHovered()) dl->AddRect(at, ImVec2(at.x + box, at.y + box), IM_COL32(120, 120, 130, 255), 3.0f);
@@ -2695,8 +2697,11 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
 }
 
 void App::FlushLabelEdit() {
-    if (!std::exchange(labelEditDirty_, false)) return;
-    if (labelEditHash_) SetLabel(*labelEditHash_, labelEdit_);
+    if (!std::exchange(labelEditDirty_, false) || !labelEditHash_) return;
+    // Nothing to save when the box holds the stored label again, e.g. after Esc reverted the edit.
+    const std::string* current = labels_.Get(*labelEditHash_);
+    if (std::string_view(labelEdit_) == (current ? std::string_view(*current) : std::string_view())) return;
+    SetLabel(*labelEditHash_, labelEdit_);
 }
 
 void App::DrawLabelEditor(const TextureFile& file, float width) {

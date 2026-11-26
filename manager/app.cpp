@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <string_view>
 
 #include "dds.h"
 #include "theme.h"
@@ -68,6 +69,15 @@ std::optional<uint32_t> ParseHash(const char* text) {
 std::string Lower(std::string s) {
     for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+// Whether `hay` contains `lowerNeedle` (already lowercased), ignoring ASCII case like Lower(),
+// without copying `hay`.
+template <class Char>
+bool ContainsLower(std::basic_string_view<Char> hay, std::basic_string_view<Char> lowerNeedle) {
+    auto lower = [](Char c) { return c >= Char('A') && c <= Char('Z') ? Char(c - Char('A') + Char('a')) : c; };
+    return std::search(hay.begin(), hay.end(), lowerNeedle.begin(), lowerNeedle.end(),
+                       [&](Char a, Char b) { return lower(a) == b; }) != hay.end();
 }
 
 fs::path LabelsFile() { return ExeDirectory() / LabelStore::kFileName; }
@@ -323,13 +333,15 @@ const std::string& App::DisplayLabel(const TextureFile& file) const {
 
 bool App::MatchesFilter(const TextureFile& f) const {
     if (!filter_[0]) return true;
-    if (std::to_string(f.hash).find(filter_) != std::string::npos) return true;
-    const std::string needle = Lower(filter_);
-    if (Lower(f.label).find(needle) != std::string::npos) return true;
+    // Runs for every texture every frame while searching, so nothing here allocates.
+    char hash[16];
+    snprintf(hash, sizeof(hash), "%u", f.hash);
+    if (std::strstr(hash, filter_)) return true;
+    if (ContainsLower<char>(f.label, filterLower_)) return true;
     // A mod's textures are found by the mod/category name too.
-    if (!f.relDir.empty() && Lower(WideToUtf8(f.relDir)).find(needle) != std::string::npos) return true;
+    if (!f.relDir.empty() && ContainsLower<wchar_t>(f.relDir, filterLowerWide_)) return true;
     const std::string* user = labels_.Get(f.hash);
-    return user && Lower(*user).find(needle) != std::string::npos;
+    return user && ContainsLower<char>(*user, filterLower_);
 }
 
 size_t App::CountMatches(const std::vector<TextureFile>& files) const {
@@ -344,6 +356,10 @@ void App::DrawSearch(float y) {
     const bool edited = ImGui::InputTextWithHint("##search", "Search mods and dumps (name or hash)", filter_,
                                                  sizeof(filter_), ImGuiInputTextFlags_EscapeClearsAll);
     ImGui::SetItemTooltip("Matches hashes, file names, labels and mod/category names.\nCtrl+F to search, Esc to clear.");
+    if (edited) {
+        filterLower_ = Lower(filter_);
+        filterLowerWide_ = Utf8ToWide(filterLower_);
+    }
     // Typing on another tab jumps to where the results are.
     if (edited && filter_[0] && tab_ != Tab::Mods && tab_ != Tab::Dumps)
         selectTab_ = CountMatches(library_.mods()) || !CountMatches(library_.dumps()) ? Tab::Mods : Tab::Dumps;
@@ -360,12 +376,17 @@ void App::ImportLabels() {
                            false);
     if (files.empty()) return;
     std::ifstream in(files[0], std::ios::binary);
+    if (!in) {
+        Status("Could not read " + ToUtf8(files[0].filename()), "");
+        return;
+    }
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const auto entries = LabelStore::Parse(text);
     if (entries.empty()) {
         Status("No labels found in that file (expected lines like 3123456789=Ash helmet)", "");
         return;
     }
+    FlushLabelEdit();  // typed before importing: the imported label for that hash still wins
     const size_t changed = labels_.Merge(entries, true);
     labelEditHash_.reset();  // the label editor reloads, in case its hash got a new label
     const bool saved = labels_.Save(LabelsFile());
@@ -379,6 +400,7 @@ void App::ExportLabels() {
     std::ofstream out(*target, std::ios::binary | std::ios::trunc);
     const std::string text = labels_.Serialize();
     out.write(text.data(), std::streamsize(text.size()));
+    out.close();  // a write that only fails when flushed (a full disk) shows up here
     Status(out ? "" : "Could not write " + ToUtf8(*target),
            "Exported " + std::to_string(labels_.size()) + " labels to " + ToUtf8(target->filename()));
 }
@@ -629,6 +651,7 @@ void App::DrawPackagePopups() {
                 const PackageResult r = ImportModPackage(copy.zip, library_.moddedFolder(), copy.name, copy.merge,
                                                          labels_, g ? g->sha256 : marked ? "" : copy.info.game);
                 if (r.labels) {
+                    FlushLabelEdit();
                     labels_.Save(LabelsFile());
                     labelEditHash_.reset();  // as for ImportLabels
                 }
@@ -639,7 +662,7 @@ void App::DrawPackagePopups() {
                 if (r.skipped) msg += " (" + std::to_string(r.skipped) + " entries skipped)";
                 Status(r.error, msg);
                 if (r.error.empty()) {
-                    tab_ = Tab::Mods;
+                    selectTab_ = Tab::Mods;  // through the tab bar: setting tab_ alone is undone next frame
                     modView_ = ModView::Folder;
                     viewFolder_ = SafeFolderName(copy.name);
                 }
@@ -658,28 +681,30 @@ void App::DrawPackagePopups() {
 void App::ImportFiles(const std::vector<fs::path>& files, const std::wstring& relDir) {
     int imported = 0;
     std::string error;
-    for (const fs::path& file : files) {
-        const std::wstring name = file.filename().wstring();
-        if (auto hash = ParseModFileName(name)) {
-            const size_t tilde = name.find(L'~');
-            const std::string label =
-                tilde == std::wstring::npos ? "" : WideToUtf8(name.substr(tilde + 1, name.rfind(L'.') - tilde - 1));
-            const std::string e = library_.Import(file, *hash, label, true, relDir);
-            if (e.empty()) ++imported;
-            else error = e;
-            thumbs_.Invalidate(library_.TargetPath(*hash, label, relDir));
-            continue;
+    library_.Batch([&] {  // one rescan at the end instead of one per file
+        for (const fs::path& file : files) {
+            const std::wstring name = file.filename().wstring();
+            if (auto hash = ParseModFileName(name)) {
+                const size_t tilde = name.find(L'~');
+                const std::string label =
+                    tilde == std::wstring::npos ? "" : WideToUtf8(name.substr(tilde + 1, name.rfind(L'.') - tilde - 1));
+                const std::string e = library_.Import(file, *hash, label, true, relDir);
+                if (e.empty()) ++imported;
+                else error = e;
+                thumbs_.Invalidate(library_.TargetPath(*hash, label, relDir));
+                continue;
+            }
+            // Not named after a hash: ask. When a dump is selected, assume it replaces that one.
+            PendingImport p;
+            p.source = file;
+            p.relDir = relDir;
+            if (const TextureFile* sel = FindSelected(); sel && !selection_->isMod)
+                snprintf(p.hash, sizeof(p.hash), "%u", sel->hash);
+            snprintf(p.label, sizeof(p.label), "%s", WideToUtf8(file.stem().wstring()).c_str());
+            pendingImports_.push_back(p);
+            openImportPopup_ = true;
         }
-        // Not named after a hash: ask. When a dump is selected, assume it replaces that one.
-        PendingImport p;
-        p.source = file;
-        p.relDir = relDir;
-        if (const TextureFile* sel = FindSelected(); sel && !selection_->isMod)
-            snprintf(p.hash, sizeof(p.hash), "%u", sel->hash);
-        snprintf(p.label, sizeof(p.label), "%s", WideToUtf8(file.stem().wstring()).c_str());
-        pendingImports_.push_back(p);
-        openImportPopup_ = true;
-    }
+    });
     if (imported || !error.empty()) Status(error, "Imported " + std::to_string(imported) + " texture(s)");
 }
 
@@ -736,8 +761,19 @@ void App::Frame() {
         const std::optional<Tab> select = std::exchange(selectTab_, std::nullopt);
         auto tab = [&](const char* name, Tab t) {
             if (ImGui::BeginTabItem(name, nullptr, select == t ? ImGuiTabItemFlags_SetSelected : 0)) {
-                if (tab_ != t) ClearSelection();
+                const std::optional<Tab> waiting =
+                    selectAfterTab_ ? std::optional(selectAfterTab_->isMod ? Tab::Mods : Tab::Dumps) : std::nullopt;
+                if (tab_ != t) {
+                    FlushLabelEdit();
+                    ClearSelection();
+                    if (waiting && *waiting != t) selectAfterTab_.reset();  // went somewhere else instead
+                }
                 tab_ = t;
+                // GoTo's texture, now that its tab is the one showing.
+                if (selectAfterTab_ && waiting == t) {
+                    Select(selectAfterTab_->path, selectAfterTab_->isMod);
+                    selectAfterTab_.reset();
+                }
                 ImGui::EndTabItem();
             }
         };
@@ -794,6 +830,7 @@ void App::Frame() {
     DrawDeleteDumpsPopup();
     DrawLabelPopup();
     DrawTintPopup();
+    DrawOpenInEditorPopup();
     ImGui::End();
     DrawSimilarWindow();
 
@@ -1476,7 +1513,11 @@ void App::DrawFolderPopups() {
             const std::wstring rel = deleteFolder_;
             Defer([this, rel] {
                 Status(library_.DeleteFolder(rel), "Moved to Recycle Bin");
-                if (modView_ == ModView::Folder) modView_ = ModView::All;
+                // Leave the view only when it showed what is gone (the folder or one inside it).
+                const std::wstring key = DisabledSet::Key(rel), view = DisabledSet::Key(viewFolder_);
+                if (modView_ == ModView::Folder && (view == key || view.starts_with(key + L"/")) &&
+                    !Exists(library_.moddedFolder() / rel))
+                    modView_ = ModView::All;
             });
             ImGui::CloseCurrentPopup();
         }
@@ -1593,31 +1634,64 @@ void App::DrawDeleteDumpsPopup() {
 
 void App::SortVisible(std::vector<const TextureFile*>& files, bool isMod) const {
     const SortOrder& order = settings_.SortFor(isMod);
-    const std::string& key = order.key;
+    enum class Key { Hash, Name, Date, FileSize, Resolution, Format, Category };
+    const std::string& name = order.key;
+    const Key key = name == "name"                ? Key::Name
+                    : name == "date"              ? Key::Date
+                    : name == "filesize"          ? Key::FileSize
+                    : name == "resolution"        ? Key::Resolution
+                    : name == "format"            ? Key::Format
+                    : name == "category" && isMod ? Key::Category
+                                                  : Key::Hash;
+    // This runs every frame: keys that have to be built are built once per texture, not in
+    // every comparison.
+    struct Item {
+        const TextureFile* file;
+        std::string label;  // Name: the label, lowercased
+        std::wstring text;  // Name: the file name (the tie-break); Category: the folder's key
+    };
+    std::vector<Item> items;
+    items.reserve(files.size());
+    for (const TextureFile* f : files) {
+        Item item{f, {}, {}};
+        if (key == Key::Name) {
+            item.label = Lower(DisplayLabel(*f));
+            item.text = f->path.filename().wstring();
+        } else if (key == Key::Category) {
+            item.text = DisabledSet::Key(f->relDir);
+        }
+        items.push_back(std::move(item));
+    }
     // Returns <0, 0, >0 like strcmp, before applying the direction.
-    auto compare = [&](const TextureFile& a, const TextureFile& b) -> int {
-        auto cmp = [](auto x, auto y) { return x < y ? -1 : (y < x ? 1 : 0); };
-        if (key == "name") {
-            const int c = cmp(Lower(DisplayLabel(a)), Lower(DisplayLabel(b)));
-            return c ? c : cmp(a.path.filename().wstring(), b.path.filename().wstring());
+    auto cmp = [](const auto& x, const auto& y) { return x < y ? -1 : (y < x ? 1 : 0); };
+    auto compare = [&](const Item& ia, const Item& ib) -> int {
+        const TextureFile& a = *ia.file;
+        const TextureFile& b = *ib.file;
+        switch (key) {
+            case Key::Name: {
+                const int c = cmp(ia.label, ib.label);
+                return c ? c : cmp(ia.text, ib.text);
+            }
+            case Key::Date: return cmp(a.modified, b.modified);
+            case Key::FileSize: return cmp(a.size, b.size);
+            case Key::Resolution: {
+                const int c = cmp(uint64_t(a.width) * a.height, uint64_t(b.width) * b.height);
+                return c ? c : cmp(a.width, b.width);
+            }
+            case Key::Format: return cmp(std::strcmp(FormatName(a.format), FormatName(b.format)), 0);
+            case Key::Category: return cmp(ia.text, ib.text);
+            case Key::Hash: break;
         }
-        if (key == "date") return cmp(a.modified, b.modified);
-        if (key == "filesize") return cmp(a.size, b.size);
-        if (key == "resolution") {
-            const int c = cmp(uint64_t(a.width) * a.height, uint64_t(b.width) * b.height);
-            return c ? c : cmp(a.width, b.width);
-        }
-        if (key == "format") return cmp(std::string(FormatName(a.format)), std::string(FormatName(b.format)));
-        if (key == "category" && isMod) return cmp(DisabledSet::Key(a.relDir), DisabledSet::Key(b.relDir));
-        return 0;  // "hash": the tie-break below
+        return 0;  // the hash tie-break below
     };
     const bool desc = order.descending;
-    std::stable_sort(files.begin(), files.end(), [&](const TextureFile* a, const TextureFile* b) {
-        int c = compare(*a, *b);
-        if (!c) c = a->hash < b->hash ? -1 : (a->hash > b->hash ? 1 : 0);
-        if (!c) return a->path < b->path;
+    std::stable_sort(items.begin(), items.end(), [&](const Item& a, const Item& b) {
+        int c = compare(a, b);
+        if (!c) c = cmp(a.file->hash, b.file->hash);
+        if (!c) return a.file->path < b.file->path;
         return desc ? c > 0 : c < 0;
     });
+    for (size_t i = 0; i < items.size(); ++i) files[i] = items[i].file;
 }
 
 ImVec2 App::PreviewSize(uint32_t w, uint32_t h, float box, int extraTurns) const {
@@ -2070,6 +2144,7 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
 
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file.path, file.modified, uint32_t(size), &info);
+    if (info) NoteEncrypted(file, info->encrypted);  // free here, and lets the selection menu know
     if (srv && info) {
         DrawPreview(dl, srv, info->width, info->height, ImVec2(pos.x + 4, pos.y + 4), ImVec2(size - 8, size - 8),
                     (isMod && !file.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
@@ -2193,19 +2268,118 @@ void App::DrawSelectionMenu(bool isMod) {
     } else {
         DrawAddToModMenu(files);
     }
+    const bool allEncrypted = KnownAllEncrypted(files);
+    if (ImGui::MenuItem("Open in editor", nullptr, false, !allEncrypted)) OpenInEditor(files);
+    if (allEncrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
+    else ImGui::SetItemTooltip("Opens each one in your default .dds editor. Encrypted (resorep1) ones are skipped.");
     ImGui::Separator();
     if (ImGui::MenuItem("Move to Recycle Bin", "Del")) Defer([this, c = Copies(files)] { Recycle(c); });
+}
+
+bool App::IsEncrypted(const TextureFile& file) {
+    if (auto it = encryptedCache_.find(file.path.native()); it != encryptedCache_.end() && it->second.modified == file.modified)
+        return it->second.encrypted;
+    DdsImage header;
+    bool encrypted = false;
+    ReadTextureInfo(file.path.wstring(), header, &encrypted);
+    NoteEncrypted(file, encrypted);
+    return encrypted;
+}
+
+void App::NoteEncrypted(const TextureFile& file, bool encrypted) {
+    encryptedCache_.insert_or_assign(file.path.native(), EncryptedEntry{file.modified, encrypted});
+}
+
+bool App::KnownAllEncrypted(const std::vector<const TextureFile*>& files) const {
+    if (files.empty()) return false;
+    return std::all_of(files.begin(), files.end(), [&](const TextureFile* f) {
+        const auto it = encryptedCache_.find(f->path.native());
+        return it != encryptedCache_.end() && it->second.modified == f->modified && it->second.encrypted;
+    });
+}
+
+void App::OpenInEditor(const std::vector<const TextureFile*>& files) {
+    OpenRequest r;
+    for (const TextureFile* f : files) {
+        if (IsEncrypted(*f)) ++r.skipped;
+        else r.paths.push_back(f->path);
+    }
+    if (r.paths.empty()) {
+        Status(r.skipped > 1 ? "These are all encrypted (resorep1) textures, which image editors can't open."
+                             : "Encrypted (resorep1) textures can't be opened by image editors.",
+               "");
+        return;
+    }
+    if (r.paths.size() > kConfirmOpenCount) {  // each one is a window or tab in the editor
+        openRequest_ = std::move(r);
+        openOpenPopup_ = true;
+        return;
+    }
+    OpenPaths(r.paths, r.skipped);
+}
+
+void App::OpenPaths(const std::vector<fs::path>& paths, size_t skipped) {
+    size_t failed = 0;
+    for (const fs::path& p : paths) failed += !OpenWithShell(p);
+    const size_t opened = paths.size() - failed;
+    const std::string note = skipped ? " " + std::to_string(skipped) + " encrypted (resorep1) " +
+                                           (skipped == 1 ? "texture was" : "textures were") + " skipped."
+                                     : std::string();
+    const std::string error =
+        failed ? std::to_string(failed) + " of " + std::to_string(paths.size()) +
+                     " could not be opened. Is a program set up to open .dds files?" + note
+               : std::string();
+    Status(error, "Opened " + std::to_string(opened) + (opened == 1 ? " texture" : " textures") + " in your editor." + note);
+}
+
+void App::DrawOpenInEditorPopup() {
+    if (openOpenPopup_) {
+        ImGui::OpenPopup("Open in editor");
+        openOpenPopup_ = false;
+    }
+    if (!openRequest_ || !ImGui::BeginPopupModal("Open in editor", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    ImGui::Text("Open %zu textures in your editor?", openRequest_->paths.size());
+    ImGui::TextColored(kDimColor, "Each one opens in the program set up for .dds files, in a window or tab of its own.");
+    if (openRequest_->skipped)
+        ImGui::TextColored(kDimColor, "%zu encrypted (resorep1) %s left out.", openRequest_->skipped,
+                           openRequest_->skipped == 1 ? "texture is" : "textures are");
+    ImGui::Spacing();
+    bool close = false;
+    if (ImGui::Button("Open", ImVec2(120, 0))) {
+        OpenPaths(openRequest_->paths, openRequest_->skipped);
+        close = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) close = true;
+    if (close) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    if (close) openRequest_.reset();
+}
+
+void App::GoTo(const fs::path& path, bool isMod) {
+    const Tab tab = isMod ? Tab::Mods : Tab::Dumps;
+    if (isMod) modView_ = ModView::All;  // so the sidebar doesn't hide it
+    if (tab_ == tab) {
+        Select(path, isMod);
+        return;
+    }
+    // Writing tab_ would be undone by the tab bar, which still has the old tab open, and the tab
+    // change clears the selection: switch through the tab bar and select once it has.
+    selectTab_ = tab;
+    selectAfterTab_ = Selection{path, isMod};
 }
 
 void App::DrawDetails() {
     if (picked_.size() > 1) {
         if (const std::vector<const TextureFile*> files = Picked(); files.size() > 1) {
+            FlushLabelEdit();  // the label box is gone
             DrawSelectionDetails(files);
             return;
         }
     }
     const TextureFile* file = FindSelected();
     if (!file) {
+        FlushLabelEdit();
         ImGui::TextColored(kDimColor, "Select a texture to see details.");
         ImGui::TextColored(kDimColor, "Ctrl+click, Shift+click or drag a box to select several.");
         ImGui::Spacing();
@@ -2224,6 +2398,7 @@ void App::DrawDetails() {
     PreviewTweak& tweak = previewTweaks_[file->hash];
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, file->modified, 0, &info);
+    if (info) NoteEncrypted(*file, info->encrypted);
     if (srv && info) {
         // The view is always the whole width x box area, so a tall or wide texture can use
         // all of it once zoomed in; at 100% fit it sits in the middle.
@@ -2398,9 +2573,10 @@ void App::DrawDetails() {
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
 
         // Side-by-side with the mod that currently replaces it (hash tolerance included).
+        const fs::path* active = library_.ModFor(file->hash);
         for (const auto& m : library_.mods()) {
-            const fs::path* active = library_.ModFor(file->hash);
-            if (!active || m.path != *active) continue;
+            if (!active) break;
+            if (m.path != *active) continue;
             ImGui::SeparatorText("Replaced by");
             const TextureInfo* modInfo = nullptr;
             if (ID3D11ShaderResourceView* modSrv = thumbs_.Get(m.path, m.modified, 256, &modInfo); modSrv && modInfo) {
@@ -2411,11 +2587,7 @@ void App::DrawDetails() {
                             IM_COL32_WHITE);
             }
             ImGui::TextColored(kDimColor, "%s", ToUtf8(m.path.lexically_relative(library_.moddedFolder())).c_str());
-            if (ImGui::Button("Go to mod")) {
-                tab_ = Tab::Mods;
-                modView_ = ModView::All;
-                Select(m.path, true);
-            }
+            if (ImGui::Button("Go to mod")) GoTo(m.path, true);
             break;
         }
     }
@@ -2441,6 +2613,16 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
     ImGui::Spacing();
 
     const ImVec2 half(width * 0.5f - 4, 0);
+    auto openButton = [&](ImVec2 size) {
+        const bool allEncrypted = KnownAllEncrypted(files);
+        ImGui::BeginDisabled(allEncrypted);
+        if (ImGui::Button("Open in editor", size)) OpenInEditor(files);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(allEncrypted ? "Encrypted (resorep1) textures can't be opened by image editors."
+                                           : "Opens each one in your default .dds editor (asks first when that is more "
+                                             "than %zu). Encrypted (resorep1) ones are skipped.",
+                              kConfirmOpenCount);
+    };
     if (isMod) {
         ImGui::BeginDisabled(off == 0);
         if (ImGui::Button("Turn all on", half)) Defer([this, c = Copies(files)] { SetEnabled(c, true); });
@@ -2460,17 +2642,21 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
             DrawMoveItems(files, true);
             ImGui::EndPopup();
         }
+        openButton(half);
+        ImGui::SameLine();
         ImGui::BeginDisabled(tintJob_.valid());
         if (ImGui::Button("Tint...", ImVec2(-1, 0))) OpenTint(files);
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Recolor all of these, e.g. turn Black Ice red. The originals go to the Recycle Bin.");
     } else {
-        if (ImGui::Button("Add to mod...", ImVec2(-1, 0))) ImGui::OpenPopup("addtomod");
+        if (ImGui::Button("Add to mod...", half)) ImGui::OpenPopup("addtomod");
         ImGui::SetItemTooltip("Copies these textures into a mod as <hash>.dds, ready to edit.");
         if (ImGui::BeginPopup("addtomod")) {
             DrawAddToModItems(files);
             ImGui::EndPopup();
         }
+        ImGui::SameLine();
+        openButton(ImVec2(-1, 0));
     }
     if (ImGui::Button("Move to Recycle Bin", half)) Defer([this, c = Copies(files)] { Recycle(c); });
     ImGui::SameLine();
@@ -2497,7 +2683,9 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
         dl->AddRectFilled(at, ImVec2(at.x + box, at.y + box), IM_COL32(28, 28, 32, 255), 3.0f);
         const TextureInfo* info = nullptr;
         // Same size as the grid's, so these come from the thumbnails it already made.
-        if (ID3D11ShaderResourceView* srv = thumbs_.Get(f.path, f.modified, uint32_t(thumbSize_), &info); srv && info)
+        ID3D11ShaderResourceView* srv = thumbs_.Get(f.path, f.modified, uint32_t(thumbSize_), &info);
+        if (info) NoteEncrypted(f, info->encrypted);
+        if (srv && info)
             DrawPreview(dl, srv, info->width, info->height, ImVec2(at.x + 2, at.y + 2), ImVec2(box - 4, box - 4),
                         (isMod && !f.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
         if (ImGui::IsItemHovered()) dl->AddRect(at, ImVec2(at.x + box, at.y + box), IM_COL32(120, 120, 130, 255), 3.0f);
@@ -2506,21 +2694,32 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
     if (files.size() > kMaxShown) ImGui::TextColored(kDimColor, "and %zu more", files.size() - kMaxShown);
 }
 
+void App::FlushLabelEdit() {
+    if (!std::exchange(labelEditDirty_, false)) return;
+    if (labelEditHash_) SetLabel(*labelEditHash_, labelEdit_);
+}
+
 void App::DrawLabelEditor(const TextureFile& file, float width) {
     if (labelEditHash_ != file.hash) {
+        // Clicking another texture ends the edit in this same frame, after the panel moved on to that
+        // texture: save what was typed to the hash it was typed for, before the box reloads.
+        FlushLabelEdit();
+        if (const ImGuiID id = ImGui::GetID("##label"); ImGui::GetActiveID() == id) ImGui::ClearActiveID();
         const std::string* current = labels_.Get(file.hash);
         snprintf(labelEdit_, sizeof(labelEdit_), "%s", current ? current->c_str() : "");
         labelEditHash_ = file.hash;
     }
     ImGui::SetNextItemWidth(width - 70);
-    ImGui::InputTextWithHint("##label", "Label this hash (e.g. Ash helmet)", labelEdit_, sizeof(labelEdit_));
-    if (ImGui::IsItemDeactivatedAfterEdit()) SetLabel(file.hash, labelEdit_);
+    if (ImGui::InputTextWithHint("##label", "Label this hash (e.g. Ash helmet)", labelEdit_, sizeof(labelEdit_)))
+        labelEditDirty_ = true;
+    if (ImGui::IsItemDeactivatedAfterEdit()) FlushLabelEdit();
     ImGui::SetItemTooltip("Your own name for this texture hash. Saved in labels.txt next to ReResorep.exe;\n"
                           "applies to the dump and every mod for this hash. Press Enter to save.");
     ImGui::SameLine();
     ImGui::BeginDisabled(!labels_.Get(file.hash));
     if (ImGui::Button("Clear", ImVec2(-1, 0))) {
         labelEdit_[0] = 0;
+        labelEditDirty_ = false;
         SetLabel(file.hash, "");
     }
     ImGui::EndDisabled();
@@ -2539,6 +2738,7 @@ void App::DrawLabelPopup() {
                                                 sizeof(labelDialog_),
                                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     if (ImGui::Button("Save", ImVec2(120, 0)) || enter) {
+        FlushLabelEdit();  // anything typed in the details panel first, so this dialog's label wins
         SetLabel(labelDialogHash_, labelDialog_);
         labelEditHash_.reset();  // the details panel's editor shows the new label
         ImGui::CloseCurrentPopup();
@@ -2626,11 +2826,7 @@ void App::DrawSimilarWindow() {
     ImGui::EndChild();
     ImGui::End();
 
-    if (show) {
-        tab_ = show->isMod ? Tab::Mods : Tab::Dumps;
-        modView_ = ModView::All;
-        Select(show->path, show->isMod);
-    }
+    if (show) GoTo(show->path, show->isMod);
     if (!open) similar_.reset();
 }
 
@@ -2645,7 +2841,9 @@ void App::DrawGames() {
     if (ImGui::Button("Add game...")) {
         auto exe = PickFiles(hwnd_, L"Choose the game executable", {{L"Programs", L"*.exe"}}, false);
         if (!exe.empty()) {
-            if (std::find(settings_.games.begin(), settings_.games.end(), exe[0]) != settings_.games.end()) {
+            // By GameKey, like everything else here: the same exe by another spelling is the same game.
+            if (std::any_of(settings_.games.begin(), settings_.games.end(),
+                            [&](const fs::path& g) { return GameKey(g) == GameKey(exe[0]); })) {
                 Status("That game is already in the list", "");
             } else {
                 settings_.games.push_back(exe[0]);
@@ -3191,12 +3389,14 @@ void App::DrawImportPopup() {
     ImGui::BeginDisabled(!allValid);
     if (ImGui::Button("Import", ImVec2(120, 0))) {
         std::string error;
-        for (const PendingImport& p : pendingImports_) {
-            const uint32_t hash = *ParseHash(p.hash);
-            const std::string e = library_.Import(p.source, hash, p.label, true, p.relDir);
-            thumbs_.Invalidate(library_.TargetPath(hash, p.label, p.relDir));
-            if (!e.empty()) error = e;
-        }
+        library_.Batch([&] {  // one rescan at the end instead of one per file
+            for (const PendingImport& p : pendingImports_) {
+                const uint32_t hash = *ParseHash(p.hash);
+                const std::string e = library_.Import(p.source, hash, p.label, true, p.relDir);
+                thumbs_.Invalidate(library_.TargetPath(hash, p.label, p.relDir));
+                if (!e.empty()) error = e;
+            }
+        });
         Status(error, "Imported " + std::to_string(pendingImports_.size()) + " texture(s)");
         pendingImports_.clear();
         ImGui::CloseCurrentPopup();

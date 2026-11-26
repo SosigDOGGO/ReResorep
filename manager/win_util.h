@@ -23,7 +23,9 @@ std::optional<std::filesystem::path> PickSaveFile(HWND owner, const wchar_t* tit
 
 bool MoveToRecycleBin(const std::filesystem::path& path);
 void ShowInExplorer(const std::filesystem::path& path);
-void OpenWithShell(const std::filesystem::path& path);
+// Opens a file, folder or URL with its default program. False when Windows could not (for
+// example, no program is set up for that file type).
+bool OpenWithShell(const std::filesystem::path& path);
 // Starts a program with its own folder as working directory. Returns an error message or "".
 std::string LaunchProgram(const std::filesystem::path& exe);
 

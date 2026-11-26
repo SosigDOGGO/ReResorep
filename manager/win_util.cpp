@@ -103,8 +103,9 @@ void ShowInExplorer(const fs::path& path) {
     }
 }
 
-void OpenWithShell(const fs::path& path) {
-    ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+bool OpenWithShell(const fs::path& path) {
+    // ShellExecute returns a value above 32 on success (an HINSTANCE kept for 16-bit compatibility).
+    return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
 }
 
 std::string LaunchProgram(const fs::path& exe) {
